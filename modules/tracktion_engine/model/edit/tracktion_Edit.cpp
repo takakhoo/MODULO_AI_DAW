@@ -871,6 +871,9 @@ void Edit::initialise (const Options& options)
 
                       for (auto effect : getAllClipEffects (*this))
                           effect->initialise();
+
+                      for (auto p : getAllPlugins (*this, true))
+                          p->trackPropertiesChanged();
                   });
 
     cancelAnyPendingUpdates();

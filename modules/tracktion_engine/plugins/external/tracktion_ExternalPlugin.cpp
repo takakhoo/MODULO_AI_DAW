@@ -951,15 +951,13 @@ void ExternalPlugin::doFullInitialisation()
 
 void ExternalPlugin::trackPropertiesChanged()
 {
-    juce::MessageManager::callAsync ([this, pluginRef = makeSafeRef (*this)]
-    {
-        if (pluginRef == nullptr)
-            return;
+    if (edit.isLoading())
+        return;
 
-        if (auto t = getOwnerTrack(); t != nullptr)
-            if (auto pi = getAudioPluginInstance())
-                pi->updateTrackProperties ({ t->getName(), t->getColour() });
-    });
+    TRACKTION_ASSERT_MESSAGE_THREAD
+    if (auto t = getOwnerTrack(); t != nullptr)
+        if (auto pi = getAudioPluginInstance())
+            pi->updateTrackProperties ({ t->getName(), t->getColour() });
 }
 
 //==============================================================================

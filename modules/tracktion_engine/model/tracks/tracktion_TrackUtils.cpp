@@ -212,6 +212,8 @@ void TrackList::deleteObject (Track* t)
 
 void TrackList::newObjectAdded (Track* t)
 {
+    jassert (t != nullptr);
+
     if (edit.isLoading())
         return;
 

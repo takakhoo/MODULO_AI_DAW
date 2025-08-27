@@ -16,12 +16,15 @@ AutomatableEditItem::AutomatableEditItem (Edit& ed, const juce::ValueTree& v)
       elementState (v)
 {
     remapOnTempoChange.referTo (elementState, IDs::remapOnTempoChange, &edit.getUndoManager(), false);
-    edit.automatableEditItemCache.addItem (*this);
+
+    if (itemID.isValid())
+        edit.automatableEditItemCache.addItem (*this);
 }
 
 AutomatableEditItem::~AutomatableEditItem()
 {
-    edit.automatableEditItemCache.removeItem (*this);
+    if (itemID.isValid())
+        edit.automatableEditItemCache.removeItem (*this);
 }
 
 //==============================================================================

@@ -653,17 +653,20 @@ struct AutomatableParameter::AutomationSourceList  : private ValueTreeObjectList
 
         if (! getUndoManager (parameter).isPerformingUndoRedo())
             removeInvalidAutomationCurveModifiers (parent, parameter);
-
-        rebuildObjects();
-        updateCachedSources();
-
-        if (isActive())
-            parameter.curveSource->triggerAsyncIteratorUpdate();
     }
 
     ~AutomationSourceList() override
     {
         freeObjects();
+    }
+
+    void initialise()
+    {
+        rebuildObjects();
+        updateCachedSources();
+
+        if (isActive())
+            parameter.curveSource->triggerAsyncIteratorUpdate();
     }
 
     static bool hasAutomationSources (const juce::ValueTree& stateToCheck)
@@ -1055,6 +1058,10 @@ AutomatableParameter::ModifierAssignment::Ptr AutomatableParameter::addModifier 
     }
     else if (auto macro = dynamic_cast<MacroParameter*> (&source))
     {
+        // Can't assign a MacroParameter to itself
+        if (macro == this)
+            return {};
+
         v = createValueTree (IDs::MACRO,
                              IDs::source, macro->paramID);
     }
@@ -1508,7 +1515,10 @@ void AutomatableParameter::startRecordingStatus()
 AutomatableParameter::AutomationSourceList& AutomatableParameter::getAutomationSourceList() const
 {
     if (! automationSourceList)
+    {
         automationSourceList = std::make_unique<AutomationSourceList> (*this);
+        automationSourceList->initialise();
+    }
 
     return *automationSourceList;
 }
