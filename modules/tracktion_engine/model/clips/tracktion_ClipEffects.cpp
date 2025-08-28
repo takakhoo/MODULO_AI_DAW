@@ -502,6 +502,9 @@ private:
             nodePlayer->setNumThreads (0);
             nodePlayer->prepareToPlay (sampleRate, (int) blockSize);
 
+            numLatencySamplesToDrop = nodePlayer->getNode()->getNodeProperties().latencyNumSamples;
+            totalSamples += numLatencySamplesToDrop;
+
             audioBuffer = choc::buffer::ChannelArrayBuffer<float> ((choc::buffer::ChannelCount) numDestChannels, (choc::buffer::FrameCount) blockSize);
         }
 
@@ -538,15 +541,38 @@ private:
 
             progressToUpdate = juce::jlimit (0.0f, 0.9f, (float) (0.9 * samplesDone / (double) totalSamples));
 
-            // NB buffer gets trashed by this call
-            if (samplesToDo <= 0 || ! writeChocBufferToAudioFormatWriter (pc.buffers.audio))
+            bool streamEnded = false;
+
+            if (samplesToDo <= 0)
             {
-                // complete render
+                progressToUpdate = 1.0f;
+                streamEnded = true;
+            }
+            else
+            {
+                if (numLatencySamplesToDrop > 0)
+                {
+                    // Unless we're dropping the whole buffer, write the last bit of it
+                    if (samplesToDo > (uint32_t) numLatencySamplesToDrop)
+                    {
+                        streamEnded = ! writeChocBufferToAudioFormatWriter (pc.buffers.audio.fromFrame ((uint32_t) numLatencySamplesToDrop));
+                        numLatencySamplesToDrop = 0;
+                    }
+                    else
+                    {
+                        numLatencySamplesToDrop -= samplesToDo;
+                    }
+                }
+                else
+                {
+                    // NB buffer gets trashed by this call
+                    streamEnded = ! writeChocBufferToAudioFormatWriter (pc.buffers.audio);
+                }
+            }
+
+            if (streamEnded)
+            {
                 writer->closeForWriting();
-
-                if (samplesToDo <= 0)
-                    progressToUpdate = 1.0f;
-
                 return juce::ThreadPoolJob::jobHasFinished;
             }
 
@@ -568,6 +594,7 @@ private:
         double sampleRate = 0;
         TimeRange streamRange;
         int numPreBlocks = 0;
+        int numLatencySamplesToDrop = 0;
         int64_t samplesDone = 0, totalSamples = 0;
         choc::buffer::ChannelArrayBuffer<float> audioBuffer;
         MidiMessageArray midiBuffer;
