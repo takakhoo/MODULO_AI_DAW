@@ -1201,7 +1201,7 @@ juce::ReferenceCountedObjectPtr<ClipEffect::ClipEffectRenderJob> PitchShiftEffec
     // Use 1.0 second of preroll to be safe. We can't ask the plugin since it
     // may not be initialized yet
     job->initialise (std::make_unique<PluginNode> (std::move (node), plugin,
-                                                   sourceFile.getInfo().sampleRate, (int) job->blockSize, nullptr,
+                                                   job->processState.sampleRate, (int) job->blockSize, nullptr,
                                                    job->processState, true, false, -1),
                      1.0);
 
