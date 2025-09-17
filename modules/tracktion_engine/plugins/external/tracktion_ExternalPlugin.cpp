@@ -957,7 +957,7 @@ void ExternalPlugin::trackPropertiesChanged()
     TRACKTION_ASSERT_MESSAGE_THREAD
     if (auto t = getOwnerTrack(); t != nullptr)
         if (auto pi = getAudioPluginInstance())
-            pi->updateTrackProperties ({ t->getName(), t->getColour() });
+            pi->updateTrackProperties ({ t->getName(), t->getColour().getARGB() });
 }
 
 //==============================================================================

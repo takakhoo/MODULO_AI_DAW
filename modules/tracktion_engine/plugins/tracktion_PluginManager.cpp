@@ -70,10 +70,10 @@ void PluginManager::initialise()
    #endif
 
     initialised = true;
-    pluginFormatManager.addDefaultFormats();
+    juce::addDefaultFormatsToManager (pluginFormatManager);
 
     if (auto patchFormat = createCmajorPatchPluginFormat (engine))
-        pluginFormatManager.addFormat (patchFormat.release());
+        pluginFormatManager.addFormat (std::move (patchFormat));
 
     auto customScanner = std::make_unique<PluginScanHelpers::CustomScanner> (engine);
 

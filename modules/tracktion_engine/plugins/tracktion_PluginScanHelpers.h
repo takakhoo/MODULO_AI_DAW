@@ -178,7 +178,7 @@ struct PluginScanChildProcess  : public juce::ChildProcessWorker,
 {
     PluginScanChildProcess()
     {
-        pluginFormatManager.addDefaultFormats();
+        juce::addDefaultFormatsToManager (pluginFormatManager);
     }
 
     void handleConnectionMade() override {}
