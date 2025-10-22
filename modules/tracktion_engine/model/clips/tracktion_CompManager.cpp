@@ -1062,7 +1062,7 @@ bool WaveCompManager::renderTake (CompRenderContext& context, Edit& edit, AudioF
             // N.B. The CombiningNode doesn't clip the source material at all so the FadeInOutNode is used for that
             //      Therefore even if there is no fade, the correct start/end times must be used
             auto fadeIn = TimeRange (segmentRange.getStart(),
-                                     i != 0 ? 0_td : crossfadeLength);
+                                     i != 0 ? crossfadeLength : 0_td);
             auto fadeOut = TimeRange::endingAt (segmentRange.getEnd(),
                                                 i != (numSegments - 1) ? crossfadeLength : 0_td);
 
