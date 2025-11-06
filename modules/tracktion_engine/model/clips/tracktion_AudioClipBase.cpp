@@ -781,7 +781,7 @@ void AudioClipBase::copyFadeToAutomation (bool useFadeIn, bool removeClipFade)
     if (fadeTime.isEmpty())
     {
         ui.showWarningMessage (TRANS("Could not create automation.")
-                                + juce::newLine + juce::newLine
+                                + "\n\n"
                                 + TRANS("No fade found for this clip"));
         return;
     }
@@ -799,7 +799,7 @@ void AudioClipBase::copyFadeToAutomation (bool useFadeIn, bool removeClipFade)
     if (param == nullptr)
     {
         ui.showWarningMessage (TRANS("Could not create automation.")
-                                 + juce::newLine + juce::newLine
+                                 + "\n\n"
                                  + TRANS("No volume plguin was found for this track, please insert one and try again"));
         return;
     }

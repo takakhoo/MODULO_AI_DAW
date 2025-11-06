@@ -149,7 +149,7 @@ private:
             engine
                 .getUIBehaviour().showWarningAlert ("Plugin Scanning...",
                                                     TRANS("There are some problems in launching a child-process to scan for plugins.")
-                                                       + juce::newLine + juce::newLine
+                                                       + "\n\n"
                                                        + TRANS("If you have a virus-checker or firewall running, you may need to temporarily disable it for the scan to work correctly."));
         }
     }

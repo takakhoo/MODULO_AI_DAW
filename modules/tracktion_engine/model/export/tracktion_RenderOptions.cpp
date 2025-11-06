@@ -1038,9 +1038,9 @@ void RenderOptions::setFilename (juce::String value, bool canPromptToOverwriteEx
           && canPromptToOverwriteExisting
           && engine.getUIBehaviour().showOkCancelAlertBox (TRANS("File Already Exists"),
                                                            TRANS("The file you have chosen already exists, do you want to delete it?")
-                                                             + juce::newLine + juce::newLine
+                                                             + "\n\n"
                                                              + TRANS("If you choose to cancel, a non existent file name will be chosen automatically.")
-                                                             + juce::newLine
+                                                             + "\n"
                                                              + "(" + TRANS("This operation can't be undone") + ")")
          #endif
         )

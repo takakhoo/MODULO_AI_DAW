@@ -659,7 +659,7 @@ bool ProjectItem::convertEditFile()
     if (newFile.existsAsFile())
     {
         juce::String m (TRANS("There appears to already be a converted Edit in the project folder."));
-        m << juce::newLine << TRANS("Do you want to use this, or create a new conversion?");
+        m << "\n" << TRANS("Do you want to use this, or create a new conversion?");
 
         if (engine.getUIBehaviour().showOkCancelAlertBox (TRANS("Converted Edit Already Exists"), m,
                                                           TRANS("Use Existing"),
@@ -678,7 +678,7 @@ bool ProjectItem::convertEditFile()
         {
             engine.getUIBehaviour().showWarningAlert (TRANS("Unable to Open Edit"),
                                                       TRANS("The selected Edit file could not be converted to the current project format.")
-                                                        + juce::newLine + juce::newLine
+                                                        + "\n\n"
                                                         + TRANS("Please ensure you can write to the Edit directory and try again."));
             return false;
         }
