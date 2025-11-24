@@ -8,10 +8,55 @@
     Tracktion Engine uses a GPL/commercial licence - see LICENCE.md for details.
 */
 
-namespace tracktion { inline namespace engine
+#if TRACKTION_UNIT_TESTS && ENGINE_UNIT_TESTS_AUDIO_FILE
+
+#include <tracktion_engine/../3rd_party/doctest/tracktion_doctest.hpp>
+
+namespace tracktion::inline engine
 {
 
-#if TRACKTION_UNIT_TESTS && ENGINE_UNIT_TESTS_AUDIO_FILE
+TEST_SUITE ("tracktion_engine")
+{
+    TEST_CASE("WavAudioFormat 7 hrs")
+    {
+        using namespace std::literals;
+        auto numChannels = 2;
+        auto duration = TimeDuration (7h);
+        auto sampleRate = 44100.0;
+        auto numSamples = toSamples (duration, sampleRate);
+
+        auto totalSizeBytes = numChannels * numSamples * sizeof (int16_t);
+        auto mb = juce::MemoryBlock (totalSizeBytes);
+        auto os = std::unique_ptr<juce::OutputStream> (std::make_unique<juce::MemoryOutputStream> (mb, false));
+        auto w = juce::WavAudioFormat().createWriterFor (os,
+                                                         juce::AudioFormatWriterOptions().withSampleRate (sampleRate)
+                                                                                         .withNumChannels (numChannels));
+        auto blockSize = 2048 * 4;
+        juce::AudioBuffer<float> temp (numChannels, blockSize);
+        temp.clear();
+
+        for (int64_t i = 0; i < numSamples;)
+        {
+            auto numLeft = numSamples - i;
+            auto numThisTime = std::min (static_cast<int64_t> (blockSize), numLeft);
+
+            temp.setSize (numChannels, numThisTime, true, false, true);
+            w->writeFromAudioSampleBuffer (temp, 0, temp.getNumSamples());
+
+            i += numThisTime;
+        }
+
+        w.reset();
+        auto is = std::make_unique<juce::MemoryInputStream> (mb, false);
+        auto reader = std::unique_ptr<juce::AudioFormatReader> (juce::WavAudioFormat().createReaderFor (is.release(), true));
+        CHECK_EQ(reader->lengthInSamples, numSamples);
+        CHECK_EQ(reader->numChannels, numChannels);
+        CHECK_EQ(reader->sampleRate, sampleRate);
+        CHECK_EQ(reader->usesFloatingPointData, false);
+        CHECK_EQ(reader->bitsPerSample, 16);
+    }
+}
+
 
 //==============================================================================
 //==============================================================================
@@ -86,4 +131,4 @@ static AudioFileTests audioFileTests;
 
 #endif
 
-}} // namespace tracktion { inline namespace engine
+} // namespace tracktion::inline engine
