@@ -129,6 +129,6 @@ private:
 
 static AudioFileTests audioFileTests;
 
-#endif
-
 } // namespace tracktion::inline engine
+
+#endif
