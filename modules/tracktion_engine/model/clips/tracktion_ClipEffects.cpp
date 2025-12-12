@@ -494,7 +494,7 @@ private:
 
             totalSamples = juce::roundToInt (streamRange.getLength().inSeconds() * sampleRate);
 
-            processStateToUse.playHeadState.playHead.playSyncedToRange ({ 0, totalSamples });
+            processStateToUse.playHeadState.playHead.play ({ -toSamples (prerollTimeRounded, sampleRate), totalSamples }, false);
 
             nodePlayer = std::make_unique<TracktionNodePlayer> (std::move (nodeToUse), processStateToUse, sampleRate, (int) blockSize,
                                                                 getPoolCreatorFunction (ThreadPoolStrategy::realTime));
