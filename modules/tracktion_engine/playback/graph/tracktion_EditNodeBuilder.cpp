@@ -1931,7 +1931,10 @@ std::unique_ptr<tracktion::graph::Node> createNodeForEdit (EditPlaybackContext& 
         if (! deviceIsBeingUsedAsInsert)
         {
             if (edit.engine.getDeviceManager().getDefaultWaveOutDeviceID() == device->getDeviceID())
+            {
                 node = createMasterPluginsNode (edit, playHeadState, std::move (node), params);
+                node = makeNode<LevelMeasuringNode> (std::move (node), epc.masterLevels);
+            }
 
             node = createMasterFadeInOutNode (edit, std::move (node), params);
             node = EditNodeBuilder::insertOptionalLastStageNode (std::move (node));
@@ -1954,7 +1957,6 @@ std::unique_ptr<tracktion::graph::Node> createNodeForEdit (EditPlaybackContext& 
     }
 
     std::unique_ptr<Node> finalNode (std::move (outputNode));
-    finalNode = makeNode<LevelMeasuringNode> (std::move (finalNode), epc.masterLevels);
     finalNode = createRackNode (std::move (finalNode), edit.getRackList(), params);
     finalNode = makeNode<PlayHeadPositionNode> (params.processState, std::move (finalNode), audibleTimeToUpdate);
 
