@@ -1,8 +1,5 @@
 name: Update Docs
 on:
-  push:
-    branches:
-      - develop
   workflow_dispatch:
 
 jobs:
