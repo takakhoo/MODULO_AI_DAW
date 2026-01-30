@@ -63,8 +63,17 @@ set_target_properties(${TARGET_NAME} PROPERTIES
 set(SourceFiles
     ${TARGET_NAME}.h
     ${TARGET_NAME}.cpp
+    ChordInspectorComponent.h
+    ChordInspectorComponent.cpp
+    TrackColors.h
     MixerComponent.h
     MixerComponent.cpp
+    FxInspectorComponent.h
+    FxInspectorComponent.cpp
+    PianoRollComponent.h
+    PianoRollComponent.cpp
+    PluginWindow.h
+    PluginWindow.cpp
     ReasonMainComponent.h
     ReasonMainComponent.cpp
     SessionController.h

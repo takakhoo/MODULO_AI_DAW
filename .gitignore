@@ -80,3 +80,7 @@ doxygen/doc
 **/.idea/**
 coverage.xml
 CoverageReport-*
+
+# Reason / ReaLchords local setup (do not commit)
+.venv_realchords/
+tools/

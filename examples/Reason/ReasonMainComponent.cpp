@@ -1,20 +1,94 @@
 #include "ReasonMainComponent.h"
 
+#include <thread>
+
+class ReasonMainComponent::PianoRollResizer : public juce::Component
+{
+public:
+    explicit PianoRollResizer (ReasonMainComponent& ownerRef)
+        : owner (ownerRef)
+    {
+        setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+    }
+
+    void mouseDown (const juce::MouseEvent& event) override
+    {
+        startHeight = owner.pianoRollHeight;
+        startY = event.getScreenY();
+    }
+
+    void mouseDrag (const juce::MouseEvent& event) override
+    {
+        const int delta = startY - event.getScreenY();
+        owner.setPianoRollHeight (startHeight + delta);
+    }
+
+private:
+    ReasonMainComponent& owner;
+    int startHeight = 0;
+    int startY = 0;
+};
+
+class ReasonMainComponent::TrackListResizer : public juce::Component
+{
+public:
+    explicit TrackListResizer (ReasonMainComponent& ownerRef)
+        : owner (ownerRef)
+    {
+        setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+    }
+
+    void mouseDown (const juce::MouseEvent& event) override
+    {
+        startWidth = owner.trackListWidth;
+        startX = event.getScreenX();
+    }
+
+    void mouseDrag (const juce::MouseEvent& event) override
+    {
+        const int delta = event.getScreenX() - startX;
+        owner.trackListWidth = juce::jlimit (180, 420, startWidth + delta);
+        owner.resized();
+    }
+
+private:
+    ReasonMainComponent& owner;
+    int startWidth = 0;
+    int startX = 0;
+};
+
 ReasonMainComponent::ReasonMainComponent()
 {
     addAndMakeVisible (transportBar);
     addAndMakeVisible (trackList);
     addAndMakeVisible (timeline);
+    addAndMakeVisible (chordInspector);
+    addAndMakeVisible (fxInspector);
+    addAndMakeVisible (pianoRoll);
+    addAndMakeVisible (verticalScrollBar);
 
     timeline.setSession (&session);
     timeline.setRowHeight (trackList.getRowHeight());
+    trackList.setHeaderHeight (timeline.getHeaderHeight());
 
     const auto trackNames = session.getTrackNames();
     trackList.setTracks (trackNames);
+    trackList.setTrackInstrumentNames (session.getTrackInstrumentNames());
     trackList.setTrackVolumes (session.getTrackVolumes());
+    trackList.setTrackEffectCounts (session.getTrackEffectCounts());
+    trackList.setTrackMuteStates (session.getTrackMuteStates());
+    trackList.setTrackSoloStates (session.getTrackSoloStates());
     trackList.setSelectedIndex (session.getSelectedTrack());
+    refreshFxInspector();
+    refreshChordInspector();
+    updateVerticalScrollBar();
 
     transportBar.setTempoText ("Tempo: --");
+    transportBar.setBarsText ("Bar 1 | Beat 1");
+    transportBar.setTimeSignatureText (session.getTimeSignature());
+    transportBar.setKeySignatureText (session.getKeySignature());
+    transportBar.setRecordActive (session.isRecording());
+    transportBar.setMidiInputText ("MIDI: " + session.getSelectedMidiInputName());
 
     transportBar.onPlay = [this]
     {
@@ -26,9 +100,35 @@ ReasonMainComponent::ReasonMainComponent()
         session.stop();
     };
 
+    transportBar.onRecord = [this]
+    {
+        const bool recording = session.toggleRecord();
+        transportBar.setRecordActive (recording);
+    };
+
     transportBar.onImport = [this]
     {
         showImportMenu();
+    };
+
+    transportBar.onProject = [this]
+    {
+        showProjectMenu();
+    };
+
+    transportBar.onPlugins = [this]
+    {
+        showPluginsWindow();
+    };
+
+    transportBar.onGenerateChords = [this]
+    {
+        generateChordOptionsForSelection();
+    };
+
+    transportBar.onMidiInput = [this]
+    {
+        showMidiInputMenu();
     };
 
     transportBar.onSettings = [this]
@@ -36,9 +136,29 @@ ReasonMainComponent::ReasonMainComponent()
         session.showAudioSettings();
     };
 
+    transportBar.onTempoChanged = [this] (const juce::String& text)
+    {
+        const auto trimmed = text.retainCharacters ("0123456789.");
+        if (trimmed.isNotEmpty())
+            session.setTempoBpm (trimmed.getDoubleValue());
+    };
+
+    transportBar.onTimeSignatureChanged = [this] (const juce::String& text)
+    {
+        session.setTimeSignature (text);
+    };
+
+    transportBar.onKeySignatureChanged = [this] (const juce::String& text)
+    {
+        session.setKeySignature (text);
+        transportBar.setKeySignatureText (session.getKeySignature());
+    };
+
     trackList.onSelectionChanged = [this] (int index)
     {
         session.setSelectedTrack (index);
+        refreshFxInspector();
+        refreshChordInspector();
     };
 
     trackList.onVolumeChanged = [this] (int index, float value)
@@ -46,16 +166,114 @@ ReasonMainComponent::ReasonMainComponent()
         session.setTrackVolume (index, value);
     };
 
+    trackList.onNameChanged = [this] (int index, const juce::String& name)
+    {
+        session.setTrackName (index, name);
+        trackList.setTracks (session.getTrackNames());
+    };
+
+    trackList.onInstrumentClicked = [this] (int index)
+    {
+        showInstrumentMenu (index);
+    };
+
+    trackList.onFxClicked = [this] (int index)
+    {
+        showFxMenu (index);
+    };
+
+    trackList.onMuteChanged = [this] (int index, bool muted)
+    {
+        session.setTrackMute (index, muted);
+        trackList.setTrackMuteStates (session.getTrackMuteStates());
+    };
+
+    trackList.onSoloChanged = [this] (int index, bool solo)
+    {
+        session.setTrackSolo (index, solo);
+        trackList.setTrackSoloStates (session.getTrackSoloStates());
+    };
+
+    trackList.onVerticalScrollChanged = [this] (int offset)
+    {
+        handleTrackScroll (offset);
+    };
+
+    trackList.onContextMenuRequested = [this] (int index, juce::Component* source)
+    {
+        showChordTrackMenu (index, source);
+    };
+
+    fxInspector.onSlotSelected = [this] (uint64_t pluginId)
+    {
+        auto editor = session.createPluginEditor (pluginId);
+        if (editor != nullptr)
+            fxInspector.setEditor (std::move (editor));
+        else
+            fxInspector.clearEditor();
+    };
+
+    fxInspector.onSlotEnabledChanged = [this] (uint64_t pluginId, bool enabled)
+    {
+        session.setPluginEnabled (pluginId, enabled);
+        refreshFxInspector();
+    };
+
+    fxInspector.onSlotRemoved = [this] (uint64_t pluginId)
+    {
+        session.removePlugin (pluginId);
+        refreshFxInspector();
+    };
+
     timeline.onTrackSelected = [this] (int index)
     {
         trackList.setSelectedIndex (index);
+        refreshFxInspector();
+        refreshChordInspector();
     };
+
+    timeline.onClipDoubleClicked = [this] (const SessionController::ClipInfo& clip)
+    {
+        if (clip.type == SessionController::ClipType::midi)
+            openPianoRollForClip (clip.id);
+    };
+
+    timeline.onViewChanged = [this] (double viewStart, double pps)
+    {
+        if (pianoRollVisible)
+            pianoRoll.setView (viewStart, pps);
+    };
+
+    timeline.onVerticalScrollChanged = [this] (int offset)
+    {
+        handleTrackScroll (offset);
+    };
+
+    pianoRoll.setSession (&session);
+    pianoRoll.setVisible (false);
+    pianoRoll.onViewChanged = [this] (double viewStart, double pps)
+    {
+        timeline.setView (viewStart, pps);
+    };
+
+    pianoRollResizer = std::make_unique<PianoRollResizer> (*this);
+    addAndMakeVisible (*pianoRollResizer);
+    pianoRollResizer->setVisible (false);
+
+    trackListResizer = std::make_unique<TrackListResizer> (*this);
+    addAndMakeVisible (*trackListResizer);
+
+    verticalScrollBar.setRangeLimits (0.0, 1.0);
+    verticalScrollBar.setCurrentRange (0.0, 1.0);
+    verticalScrollBar.addListener (this);
 
     setFocusContainerType (juce::Component::FocusContainerType::focusContainer);
     setWantsKeyboardFocus (true);
     grabKeyboardFocus();
     setSize (1100, 700);
     startTimerHz (30);
+
+    ensureRealchordsServer();
 }
 
 void ReasonMainComponent::paint (juce::Graphics& g)
@@ -67,13 +285,39 @@ void ReasonMainComponent::resized()
 {
     auto r = getLocalBounds();
 
-    auto transportArea = r.removeFromTop (52);
+    auto transportArea = r.removeFromTop (72);
     transportBar.setBounds (transportArea);
 
-    auto trackListArea = r.removeFromLeft (260);
+    auto trackListArea = r.removeFromLeft (trackListWidth);
     trackList.setBounds (trackListArea);
 
-    timeline.setBounds (r);
+    auto trackResizerArea = r.removeFromLeft (6);
+    trackListResizer->setBounds (trackResizerArea);
+
+    auto inspectorArea = r.removeFromRight (inspectorWidth);
+    auto chordInspectorArea = inspectorArea.removeFromTop (220);
+    chordInspector.setBounds (chordInspectorArea);
+    fxInspector.setBounds (inspectorArea);
+
+    auto scrollBarArea = r.removeFromRight (12);
+    verticalScrollBar.setBounds (scrollBarArea.reduced (2, 2));
+
+    if (pianoRollVisible)
+    {
+        const int resizerHeight = 6;
+        auto pianoArea = r.removeFromBottom (pianoRollHeight);
+        auto resizerArea = r.removeFromBottom (resizerHeight);
+        timeline.setBounds (r);
+        pianoRollResizer->setBounds (resizerArea);
+        pianoRoll.setBounds (pianoArea);
+    }
+    else
+    {
+        timeline.setBounds (r);
+    }
+
+    trackList.setVisibleTrackHeightOverride (timeline.getVisibleTrackHeight());
+    updateVerticalScrollBar();
 }
 
 bool ReasonMainComponent::keyPressed (const juce::KeyPress& key)
@@ -84,11 +328,118 @@ bool ReasonMainComponent::keyPressed (const juce::KeyPress& key)
         return true;
     }
 
+    if (pianoRollVisible && pianoRoll.hasKeyboardFocus (true))
+    {
+        if (pianoRoll.keyPressed (key))
+            return true;
+    }
+
+    if (key.getModifiers().isCommandDown())
+    {
+        const int keyCode = key.getKeyCode();
+        if (keyCode == 'z' || keyCode == 'Z')
+        {
+            if (key.getModifiers().isShiftDown())
+                session.redo();
+            else
+                session.undo();
+            refreshSessionState();
+            updateVerticalScrollBar();
+            return true;
+        }
+        if (keyCode == 'd' || keyCode == 'D')
+        {
+            if (session.duplicateTrack (session.getSelectedTrack()))
+            {
+                refreshSessionState();
+                updateVerticalScrollBar();
+            }
+            return true;
+        }
+        if (keyCode == 'c' || keyCode == 'C')
+        {
+            const auto clipId = timeline.getSelectedClipId();
+            if (clipId != 0)
+                clipClipboardId = clipId;
+            return true;
+        }
+        if (keyCode == 'v' || keyCode == 'V')
+        {
+            if (clipClipboardId != 0)
+            {
+                const auto newClipId = session.duplicateClipToTrack (clipClipboardId,
+                                                                     session.getSelectedTrack(),
+                                                                     session.getCursorTimeSeconds());
+                if (newClipId != 0)
+                {
+                    timeline.setSelectedClipId (newClipId);
+                    refreshSessionState();
+                }
+            }
+            return true;
+        }
+        if (keyCode == 'n' || keyCode == 'N')
+        {
+            beginProjectAction (ProjectAction::newEdit);
+            return true;
+        }
+        if (keyCode == 'o' || keyCode == 'O')
+        {
+            beginProjectAction (ProjectAction::open);
+            return true;
+        }
+        if (keyCode == 's' || keyCode == 'S')
+        {
+            if (key.getModifiers().isShiftDown())
+                beginProjectAction (ProjectAction::saveAs);
+            else
+                beginProjectAction (ProjectAction::save);
+            return true;
+        }
+    }
+
     const juce::juce_wchar keyChar = key.getTextCharacter();
     if (keyChar == 'i' || keyChar == 'I')
     {
         timeline.addIdeaMarker (session.getInsertionTimeSeconds());
         return true;
+    }
+
+    if (keyChar == 'e' || keyChar == 'E')
+    {
+        togglePianoRollForSelectedClip();
+        return true;
+    }
+
+    if (keyChar == 'r' || keyChar == 'R')
+    {
+        const bool recording = session.toggleRecord();
+        transportBar.setRecordActive (recording);
+        return true;
+    }
+
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
+    {
+        const auto clipId = timeline.getSelectedClipId();
+        if (clipId != 0)
+        {
+            if (session.deleteClip (clipId))
+            {
+                timeline.clearSelection();
+                refreshSessionState();
+                return true;
+            }
+        }
+        else
+        {
+            const int trackIndex = session.getSelectedTrack();
+            if (session.deleteTrack (trackIndex))
+            {
+                refreshSessionState();
+                updateVerticalScrollBar();
+                return true;
+            }
+        }
     }
 
     return false;
@@ -97,6 +448,15 @@ bool ReasonMainComponent::keyPressed (const juce::KeyPress& key)
 void ReasonMainComponent::timerCallback()
 {
     updateTimeDisplay();
+    transportBar.setRecordActive (session.isRecording());
+}
+
+void ReasonMainComponent::scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart)
+{
+    if (scrollBarThatHasMoved != &verticalScrollBar || ignoreVerticalScrollCallback)
+        return;
+
+    handleTrackScroll ((int) std::round (newRangeStart));
 }
 
 void ReasonMainComponent::updateTimeDisplay()
@@ -106,6 +466,10 @@ void ReasonMainComponent::updateTimeDisplay()
     const double seconds = timeSeconds - (minutes * 60.0);
 
     transportBar.setTimeText (juce::String::formatted ("%02d:%04.1f", minutes, seconds));
+    transportBar.setBarsText (session.getBarsAndBeatsText (timeSeconds));
+    transportBar.setTempoText ("Tempo " + juce::String (session.getTempoBpm(), 1));
+    transportBar.setTimeSignatureText (session.getTimeSignature());
+    transportBar.setKeySignatureText (session.getKeySignature());
 }
 
 void ReasonMainComponent::showImportMenu()
@@ -160,4 +524,720 @@ void ReasonMainComponent::beginImport (ImportType type)
                                       timeline.repaint();
                                   }
                               });
+}
+
+void ReasonMainComponent::showProjectMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem ("New...", [this] { beginProjectAction (ProjectAction::newEdit); });
+    menu.addItem ("Open...", [this] { beginProjectAction (ProjectAction::open); });
+    menu.addSeparator();
+    menu.addItem ("Save", [this] { beginProjectAction (ProjectAction::save); });
+    menu.addItem ("Save As...", [this] { beginProjectAction (ProjectAction::saveAs); });
+    menu.showMenuAsync ({});
+}
+
+void ReasonMainComponent::beginProjectAction (ProjectAction action)
+{
+    if (action == ProjectAction::save)
+    {
+        if (! session.saveEdit())
+            beginProjectAction (ProjectAction::saveAs);
+        return;
+    }
+
+    auto& engine = session.getEngine();
+    const auto defaultDir = engine.getPropertyStorage().getDefaultLoadSaveDirectory ("reasonProject");
+
+    if (action == ProjectAction::saveAs)
+    {
+        projectChooser = std::make_shared<juce::FileChooser> ("Save Project...", defaultDir, "*.tracktionedit");
+        projectChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                                     [this] (const juce::FileChooser& chooser)
+                                     {
+                                         auto file = chooser.getResult();
+                                         if (file == juce::File())
+                                             return;
+
+                                         if (file.getFileExtension().isEmpty())
+                                             file = file.withFileExtension (".tracktionedit");
+
+                                         if (session.saveEditAs (file))
+                                         {
+                                             session.getEngine().getPropertyStorage().setDefaultLoadSaveDirectory ("reasonProject", file.getParentDirectory());
+                                         }
+                                     });
+        return;
+    }
+
+    const bool isNew = (action == ProjectAction::newEdit);
+    const auto flags = isNew
+        ? (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles)
+        : (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles);
+
+    const juce::String title = isNew ? "New Project..." : "Open Project...";
+    projectChooser = std::make_shared<juce::FileChooser> (title, defaultDir, "*.tracktionedit");
+    projectChooser->launchAsync (flags,
+                                 [this, isNew] (const juce::FileChooser& chooser)
+                                 {
+                                     auto file = chooser.getResult();
+                                     if (file == juce::File())
+                                         return;
+
+                                     if (isNew && file.getFileExtension().isEmpty())
+                                         file = file.withFileExtension (".tracktionedit");
+
+                                     const bool success = isNew ? session.createNewEdit (file)
+                                                                : session.openEdit (file);
+                                     if (success)
+                                     {
+                                         session.getEngine().getPropertyStorage().setDefaultLoadSaveDirectory ("reasonProject", file.getParentDirectory());
+                                         refreshSessionState();
+                                     }
+                                 });
+}
+
+void ReasonMainComponent::showPluginsWindow()
+{
+    auto& engine = session.getEngine();
+
+    juce::DialogWindow::LaunchOptions options;
+    options.dialogTitle = "Plugins";
+    options.dialogBackgroundColour = juce::Colour (0xFF1A1C20);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = true;
+    options.useBottomRightCornerResizer = true;
+
+    auto* component = new juce::PluginListComponent (engine.getPluginManager().pluginFormatManager,
+                                                     engine.getPluginManager().knownPluginList,
+                                                     engine.getTemporaryFileManager().getTempFile ("PluginScanDeadMansPedal"),
+                                                     std::addressof (engine.getPropertyStorage().getPropertiesFile()),
+                                                     true);
+    component->setSize (800, 600);
+    options.content.setOwned (component);
+    options.launchAsync();
+}
+
+void ReasonMainComponent::showMidiInputMenu()
+{
+    juce::PopupMenu menu;
+    auto names = session.getMidiInputDeviceNames();
+    const int selectedIndex = session.getSelectedMidiInputIndex();
+
+    if (names.isEmpty())
+    {
+        menu.addItem ("No MIDI Inputs Found", false, false, nullptr);
+    }
+    else
+    {
+        for (int i = 0; i < names.size(); ++i)
+        {
+            const bool isSelected = (i == selectedIndex);
+            juce::PopupMenu::Item item;
+            item.text = names[i];
+            item.isEnabled = true;
+            item.isTicked = isSelected;
+            item.action = [this, i]
+            {
+                session.setSelectedMidiInputIndex (i);
+                transportBar.setMidiInputText ("MIDI: " + session.getSelectedMidiInputName());
+            };
+            menu.addItem (item);
+        }
+    }
+
+    menu.showMenuAsync ({});
+}
+
+void ReasonMainComponent::showInstrumentMenu (int trackIndex)
+{
+    trackList.setSelectedIndex (trackIndex);
+    session.setSelectedTrack (trackIndex);
+
+    juce::PopupMenu menu;
+    auto choices = session.getInstrumentChoices();
+
+    if (choices.empty())
+    {
+        menu.addItem ("No instruments found", false, false, nullptr);
+    }
+    else
+    {
+        const auto currentNames = session.getTrackInstrumentNames();
+        const auto current = (trackIndex >= 0 && trackIndex < currentNames.size())
+            ? currentNames[trackIndex]
+            : juce::String();
+        std::sort (choices.begin(), choices.end(),
+                   [] (const SessionController::PluginChoice& a, const SessionController::PluginChoice& b)
+                   {
+                       return a.description.name.compareIgnoreCase (b.description.name) < 0;
+                   });
+
+        for (size_t i = 0; i < choices.size(); ++i)
+        {
+            const auto& choice = choices[i];
+            juce::String label = choice.description.name;
+            if (label.isEmpty())
+                label = choice.description.pluginFormatName;
+
+            const bool isCurrent = label == current;
+            juce::PopupMenu::Item item;
+            item.itemID = (int) i + 1;
+            item.text = label;
+            item.isEnabled = true;
+            item.isTicked = isCurrent;
+            menu.addItem (item);
+        }
+    }
+
+    menu.showMenuAsync ({}, [this, trackIndex, choices] (int result)
+    {
+        if (result <= 0 || result > (int) choices.size())
+            return;
+
+        const auto prevInstrumentNames = session.getTrackInstrumentNames();
+        const auto prevInstrument = (trackIndex >= 0 && trackIndex < prevInstrumentNames.size())
+            ? prevInstrumentNames[trackIndex]
+            : juce::String();
+        const auto prevTrackName = session.getTrackName (trackIndex);
+
+        const auto& choice = choices[(size_t) result - 1];
+        const auto pluginId = session.insertInstrument (trackIndex, choice);
+
+        const auto newInstrumentNames = session.getTrackInstrumentNames();
+        const auto newInstrument = (trackIndex >= 0 && trackIndex < newInstrumentNames.size())
+            ? newInstrumentNames[trackIndex]
+            : juce::String();
+
+        const auto defaultName = "Track " + juce::String (trackIndex + 1);
+        if (prevTrackName == defaultName || prevTrackName == prevInstrument)
+            session.setTrackName (trackIndex, newInstrument);
+
+        trackList.setTracks (session.getTrackNames());
+        trackList.setTrackInstrumentNames (newInstrumentNames);
+
+        if (pluginId != 0)
+            session.showPluginWindow (pluginId);
+    });
+}
+
+void ReasonMainComponent::showFxMenu (int trackIndex)
+{
+    trackList.setSelectedIndex (trackIndex);
+    session.setSelectedTrack (trackIndex);
+
+    juce::PopupMenu menu;
+    auto choices = session.getEffectChoices();
+
+    if (choices.empty())
+    {
+        menu.addItem ("No effects found", false, false, nullptr);
+        menu.showMenuAsync ({});
+        return;
+    }
+
+    std::sort (choices.begin(), choices.end(),
+               [] (const SessionController::PluginChoice& a, const SessionController::PluginChoice& b)
+               {
+                   return a.description.name.compareIgnoreCase (b.description.name) < 0;
+               });
+
+    for (size_t i = 0; i < choices.size(); ++i)
+    {
+        const auto& choice = choices[i];
+        juce::String label = choice.description.name;
+        if (label.isEmpty())
+            label = choice.description.pluginFormatName;
+
+        juce::PopupMenu::Item item;
+        item.itemID = (int) i + 1;
+        item.text = label;
+        item.isEnabled = true;
+        menu.addItem (item);
+    }
+
+    menu.showMenuAsync ({}, [this, trackIndex, choices] (int result)
+    {
+        if (result <= 0 || result > (int) choices.size())
+            return;
+
+        const auto& choice = choices[(size_t) result - 1];
+        const auto pluginId = session.insertEffect (trackIndex, choice);
+        trackList.setTrackEffectCounts (session.getTrackEffectCounts());
+        refreshFxInspector();
+
+        if (pluginId != 0)
+        {
+            fxInspector.setSelectedSlot (pluginId);
+            auto editor = session.createPluginEditor (pluginId);
+            if (editor != nullptr)
+                fxInspector.setEditor (std::move (editor));
+            else
+                fxInspector.clearEditor();
+        }
+    });
+}
+
+void ReasonMainComponent::generateChordOptionsForSelection()
+{
+    if (isGeneratingChords)
+        return;
+
+    ensureRealchordsServer();
+
+    uint64_t clipId = timeline.getSelectedClipId();
+    auto clipInfo = session.getClipInfo (clipId);
+    if (! clipInfo || clipInfo->type != SessionController::ClipType::midi)
+    {
+        const auto clips = session.getClipsForTrack (session.getSelectedTrack());
+        for (const auto& clip : clips)
+        {
+            if (clip.type == SessionController::ClipType::midi)
+            {
+                clipId = clip.id;
+                break;
+            }
+        }
+    }
+
+    if (clipId == 0)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                               "Generate Chords",
+                                               "Select a MIDI clip (or record one) before generating chord options.");
+        return;
+    }
+
+    juce::AlertWindow prompt ("Generate Chords",
+                              "How many chord options do you want?",
+                              juce::AlertWindow::NoIcon);
+    prompt.addTextEditor ("count", "5", "Options");
+    prompt.addButton ("Generate", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    prompt.addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    if (prompt.runModalLoop() != 1)
+        return;
+
+    int optionCount = prompt.getTextEditorContents ("count").getIntValue();
+    optionCount = juce::jlimit (1, 16, optionCount);
+
+    std::vector<SessionController::RealchordsNoteEvent> events;
+    int endFrame = 0;
+    if (! session.buildRealchordsNoteEvents (clipId, events, endFrame))
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                               "Generate Chords",
+                                               "Unable to extract MIDI note events from the selected clip.");
+        return;
+    }
+
+    juce::Array<juce::var> noteArray;
+    for (const auto& ev : events)
+    {
+        auto* obj = new juce::DynamicObject();
+        obj->setProperty ("on", ev.on);
+        obj->setProperty ("pitch", ev.pitch);
+        obj->setProperty ("frame", ev.frame);
+        noteArray.add (juce::var (obj));
+    }
+
+    auto* payloadObj = new juce::DynamicObject();
+    payloadObj->setProperty ("model", "GAPT");
+    payloadObj->setProperty ("options", optionCount);
+    payloadObj->setProperty ("temperature", 0.9);
+    payloadObj->setProperty ("endFrame", endFrame);
+    payloadObj->setProperty ("lookahead", 16);
+    payloadObj->setProperty ("commitahead", 16);
+    payloadObj->setProperty ("silenceTill", 32);
+    payloadObj->setProperty ("notes", juce::var (noteArray));
+    const juce::String payload = juce::JSON::toString (juce::var (payloadObj));
+
+    isGeneratingChords = true;
+
+    std::thread ([this, payload, clipId]
+    {
+        juce::URL url ("http://127.0.0.1:8090/generate");
+        url = url.withPOSTData (payload);
+        int statusCode = 0;
+        auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                           .withConnectionTimeoutMs (60000)
+                           .withNumRedirectsToFollow (2)
+                           .withStatusCode (&statusCode)
+                           .withExtraHeaders ("Content-Type: application/json\r\n");
+
+        std::unique_ptr<juce::InputStream> stream (url.createInputStream (options));
+        if (stream == nullptr)
+        {
+            juce::MessageManager::callAsync ([this]
+            {
+                isGeneratingChords = false;
+                juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                       "Generate Chords",
+                                                       "Could not reach the Realchords batch server at http://127.0.0.1:8090.");
+            });
+            return;
+        }
+
+        const juce::String response = stream->readEntireStreamAsString();
+        const juce::var parsed = juce::JSON::parse (response);
+
+        juce::MessageManager::callAsync ([this, clipId, parsed, response, statusCode]
+        {
+            isGeneratingChords = false;
+            if (statusCode != 0 && statusCode != 200)
+            {
+                juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                                       "Generate Chords",
+                                                       "Realchords server returned HTTP " + juce::String (statusCode) + ".\n\nResponse:\n" + response);
+                return;
+            }
+            handleChordOptionsResponse (clipId, parsed, response);
+        });
+    }).detach();
+}
+
+void ReasonMainComponent::handleChordOptionsResponse (uint64_t sourceClipId, const juce::var& response, const juce::String& rawResponse)
+{
+    if (! response.isObject())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                               "Generate Chords",
+                                               "Chord generation failed (invalid response). Make sure the Realchords server is running.\n\nResponse:\n" + rawResponse);
+        return;
+    }
+
+    const auto* obj = response.getDynamicObject();
+    const auto optionsVar = obj->getProperty ("options");
+    if (! optionsVar.isArray())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                               "Generate Chords",
+                                               "Chord generation failed (no options returned).");
+        return;
+    }
+
+    std::vector<SessionController::ChordOption> options;
+    const auto& optionsArray = *optionsVar.getArray();
+    for (int i = 0; i < optionsArray.size(); ++i)
+    {
+        const auto& optionVar = optionsArray.getReference (i);
+        if (! optionVar.isObject())
+            continue;
+
+        const auto* optionObj = optionVar.getDynamicObject();
+        SessionController::ChordOption option;
+        option.name = "Chords Option " + juce::String (i + 1);
+        option.frameCount = (int) optionObj->getProperty ("frameCount");
+
+        const auto chordsVar = optionObj->getProperty ("chords");
+        if (chordsVar.isArray())
+        {
+            const auto& chordsArray = *chordsVar.getArray();
+            for (const auto& chordVar : chordsArray)
+            {
+                if (! chordVar.isObject())
+                    continue;
+                const auto* chordObj = chordVar.getDynamicObject();
+                SessionController::ChordFrame frame;
+                frame.frame = (int) chordObj->getProperty ("frame");
+                frame.symbol = chordObj->getProperty ("symbol").toString();
+                frame.on = (bool) chordObj->getProperty ("on");
+
+                const auto pitchesVar = chordObj->getProperty ("pitches");
+                if (pitchesVar.isArray())
+                {
+                    const auto& pitches = *pitchesVar.getArray();
+                    for (const auto& pitchVar : pitches)
+                        frame.pitches.add ((int) pitchVar);
+                }
+                option.frames.push_back (frame);
+            }
+        }
+        options.push_back (std::move (option));
+    }
+
+    if (options.empty())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                               "Generate Chords",
+                                               "No chord options were generated.");
+        return;
+    }
+
+    if (session.createChordOptionTracks (sourceClipId, options))
+    {
+        refreshSessionState();
+    }
+    else
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
+                                               "Generate Chords",
+                                               "Failed to create chord option tracks in the edit.");
+    }
+}
+
+void ReasonMainComponent::ensureRealchordsServer()
+{
+    if (pingRealchordsServer (400))
+        return;
+
+    if (! realchordsLaunchAttempted)
+    {
+        realchordsLaunchAttempted = true;
+        startRealchordsServer();
+    }
+}
+
+bool ReasonMainComponent::pingRealchordsServer (int timeoutMs)
+{
+    juce::URL url ("http://127.0.0.1:8090/health");
+    auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                       .withConnectionTimeoutMs (timeoutMs)
+                       .withNumRedirectsToFollow (1);
+    std::unique_ptr<juce::InputStream> stream (url.createInputStream (options));
+    if (stream == nullptr)
+        return false;
+
+    const juce::String response = stream->readEntireStreamAsString();
+    return response.contains ("\"ok\"");
+}
+
+void ReasonMainComponent::startRealchordsServer()
+{
+    if (realchordsProcess != nullptr && realchordsProcess->isRunning())
+        return;
+
+    juce::File projectRoot = juce::File::getCurrentWorkingDirectory();
+    if (! projectRoot.getChildFile ("tools/realchords").exists())
+        return;
+
+    const juce::String pythonPath = projectRoot.getChildFile ("tools/realchords/.venv/bin/python").getFullPathName();
+    const juce::String scriptPath = projectRoot.getChildFile ("tools/realchords/realchords_batch_server.py").getFullPathName();
+
+    const juce::String command = pythonPath + " " + scriptPath;
+    realchordsProcess = std::make_unique<juce::ChildProcess>();
+    realchordsProcess->start (command);
+}
+
+void ReasonMainComponent::openPianoRollForClip (uint64_t clipId)
+{
+    auto clipInfo = session.getClipInfo (clipId);
+    if (! clipInfo || clipInfo->type != SessionController::ClipType::midi)
+        return;
+
+    pianoRollVisible = true;
+    pianoRoll.setVisible (true);
+    pianoRollResizer->setVisible (true);
+    pianoRoll.setClipId (clipId);
+    pianoRoll.setView (timeline.getViewStartSeconds(), timeline.getPixelsPerSecond());
+    pianoRoll.grabKeyboardFocus();
+    resized();
+}
+
+void ReasonMainComponent::togglePianoRollForSelectedClip()
+{
+    const auto clipId = timeline.getSelectedClipId();
+    if (clipId == 0)
+        return;
+
+    if (pianoRollVisible && pianoRoll.getClipId() == clipId)
+    {
+        pianoRollVisible = false;
+        pianoRoll.setVisible (false);
+        pianoRollResizer->setVisible (false);
+        resized();
+        return;
+    }
+
+    openPianoRollForClip (clipId);
+}
+
+void ReasonMainComponent::setPianoRollHeight (int newHeight)
+{
+    if (! pianoRollVisible)
+        return;
+
+    const int minHeight = 140;
+    const int maxHeight = juce::jmax (minHeight, getHeight() - 220);
+    pianoRollHeight = juce::jlimit (minHeight, maxHeight, newHeight);
+    resized();
+}
+
+void ReasonMainComponent::refreshFxInspector()
+{
+    const int trackIndex = session.getSelectedTrack();
+    fxInspector.setTrackName (session.getTrackName (trackIndex));
+
+    std::vector<FxInspectorComponent::Slot> slots;
+    for (const auto& plugin : session.getTrackEffects (trackIndex))
+        slots.push_back ({ plugin.id, plugin.name, plugin.enabled });
+
+    fxInspector.setSlots (slots);
+
+    if (slots.empty())
+        fxInspector.clearEditor();
+}
+
+void ReasonMainComponent::refreshChordInspector()
+{
+    const int trackIndex = session.getSelectedTrack();
+    const auto trackName = session.getTrackName (trackIndex);
+
+    auto labels = session.getChordLabelsForTrack (trackIndex);
+    juce::StringArray lines;
+    juce::StringArray symbols;
+    for (const auto& label : labels)
+    {
+        const auto timeText = session.getBarsAndBeatsText (label.startSeconds);
+        lines.add (timeText + "  " + label.symbol);
+        symbols.add (label.symbol);
+    }
+
+    juce::String staff;
+    if (! symbols.isEmpty())
+        staff = "| " + symbols.joinIntoString (" | ") + " |";
+
+    chordInspector.setChords (trackName, lines, staff);
+}
+
+void ReasonMainComponent::refreshSessionState()
+{
+    trackList.setTracks (session.getTrackNames());
+    trackList.setTrackInstrumentNames (session.getTrackInstrumentNames());
+    trackList.setTrackVolumes (session.getTrackVolumes());
+    trackList.setTrackEffectCounts (session.getTrackEffectCounts());
+    trackList.setTrackMuteStates (session.getTrackMuteStates());
+    trackList.setTrackSoloStates (session.getTrackSoloStates());
+    trackList.setSelectedIndex (session.getSelectedTrack());
+    transportBar.setMidiInputText ("MIDI: " + session.getSelectedMidiInputName());
+    transportBar.setRecordActive (session.isRecording());
+    timeline.repaint();
+    updateTimeDisplay();
+    refreshFxInspector();
+    refreshChordInspector();
+
+    pianoRollVisible = false;
+    pianoRoll.setVisible (false);
+    if (pianoRollResizer != nullptr)
+        pianoRollResizer->setVisible (false);
+    pianoRoll.setClipId (0);
+}
+
+void ReasonMainComponent::updateVerticalScrollBar()
+{
+    const int contentHeight = timeline.getContentHeight();
+    const int visibleHeight = timeline.getVisibleTrackHeight();
+    const int maxOffset = juce::jmax (0, contentHeight - visibleHeight);
+    const int clampedOffset = juce::jlimit (0, maxOffset, trackScrollOffset);
+
+    ignoreVerticalScrollCallback = true;
+    verticalScrollBar.setRangeLimits (0.0, (double) juce::jmax (1, maxOffset));
+    verticalScrollBar.setCurrentRange ((double) clampedOffset, (double) juce::jmax (1, visibleHeight));
+    ignoreVerticalScrollCallback = false;
+
+    trackList.setVisibleTrackHeightOverride (visibleHeight);
+    handleTrackScroll (clampedOffset);
+}
+
+void ReasonMainComponent::handleTrackScroll (int newOffset)
+{
+    trackScrollOffset = newOffset;
+    trackList.setScrollOffset (trackScrollOffset);
+    timeline.setScrollOffset (trackScrollOffset);
+
+    ignoreVerticalScrollCallback = true;
+    verticalScrollBar.setCurrentRange ((double) trackScrollOffset,
+                                       (double) juce::jmax (1, timeline.getVisibleTrackHeight()));
+    ignoreVerticalScrollCallback = false;
+}
+
+void ReasonMainComponent::showChordTrackMenu (int trackIndex, juce::Component* source)
+{
+    trackList.setSelectedIndex (trackIndex);
+    session.setSelectedTrack (trackIndex);
+    refreshChordInspector();
+
+    juce::PopupMenu menu;
+    auto labels = session.getChordLabelsForTrack (trackIndex);
+    if (labels.empty())
+    {
+        menu.addItem ("No chords found", false, false, nullptr);
+    }
+    else
+    {
+        for (const auto& label : labels)
+        {
+            const auto timeText = session.getBarsAndBeatsText (label.startSeconds);
+            menu.addItem (timeText + "  " + label.symbol, false, false, nullptr);
+        }
+    }
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (source));
+}
+
+bool ReasonMainComponent::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return files.size() > 0;
+}
+
+void ReasonMainComponent::filesDropped (const juce::StringArray& files, int x, int y)
+{
+    if (files.isEmpty())
+        return;
+
+    const juce::Point<int> dropPos (x, y);
+    int trackIndex = session.getSelectedTrack();
+    double startTime = session.getInsertionTimeSeconds();
+
+    if (timeline.getBounds().contains (dropPos))
+    {
+        const auto local = dropPos - timeline.getPosition();
+        const int hovered = timeline.getTrackIndexAtY (local.y);
+        if (hovered >= 0)
+            trackIndex = hovered;
+        startTime = timeline.getTimeAtX (local.x);
+    }
+    else if (trackList.getBounds().contains (dropPos))
+    {
+        const auto local = dropPos - trackList.getPosition();
+        const int hovered = trackList.getTrackIndexAtY (local.y);
+        if (hovered >= 0)
+            trackIndex = hovered;
+    }
+
+    session.setSelectedTrack (trackIndex);
+    trackList.setSelectedIndex (trackIndex);
+
+    auto& formatManager = session.getEngine().getAudioFileFormatManager().readFormatManager;
+
+    for (const auto& path : files)
+    {
+        juce::File file (path);
+        if (! file.existsAsFile())
+            continue;
+
+        const auto ext = file.getFileExtension().toLowerCase();
+        const auto extNoDot = ext.startsWithChar ('.') ? ext.substring (1) : ext;
+        const bool isMidi = (ext == ".mid" || ext == ".midi");
+        bool success = false;
+
+        if (isMidi)
+        {
+            success = session.importMidi (trackIndex, file, startTime);
+        }
+        else if (formatManager.findFormatForFileExtension (extNoDot) != nullptr)
+        {
+            success = session.importAudio (trackIndex, file, startTime);
+        }
+        else
+        {
+            success = session.importAudio (trackIndex, file, startTime);
+            if (! success)
+                success = session.importMidi (trackIndex, file, startTime);
+        }
+
+        if (success)
+            timeline.repaint();
+    }
 }
