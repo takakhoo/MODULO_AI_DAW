@@ -1,6 +1,68 @@
 #include "ReasonMainComponent.h"
 
+#include <limits>
 #include <thread>
+
+namespace
+{
+int getRealchordsPort()
+{
+    const int port = juce::SystemStats::getEnvironmentVariable ("REALCHORDS_PORT", "8090").getIntValue();
+    return port > 0 ? port : 8090;
+}
+
+juce::String getRealchordsHost()
+{
+    auto host = juce::SystemStats::getEnvironmentVariable ("REALCHORDS_HOST", "127.0.0.1");
+    if (host.isEmpty())
+        host = "127.0.0.1";
+    return host;
+}
+
+juce::String getRealchordsBaseUrl()
+{
+    return "http://" + getRealchordsHost() + ":" + juce::String (getRealchordsPort());
+}
+
+juce::File findRealchordsProjectRoot()
+{
+    auto findFrom = [] (juce::File dir) -> juce::File
+    {
+        for (int i = 0; i < 12 && dir.exists(); ++i)
+        {
+            if (dir.getChildFile ("tools/realchords/realchords_batch_server.py").existsAsFile())
+                return dir;
+            dir = dir.getParentDirectory();
+        }
+        return {};
+    };
+
+    auto exeDir = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getParentDirectory();
+    auto root = findFrom (exeDir);
+    if (root.exists())
+        return root;
+
+    auto cwd = juce::File::getCurrentWorkingDirectory();
+    root = findFrom (cwd);
+    if (root.exists())
+        return root;
+
+    return {};
+}
+
+juce::String getRealchordsStartHint()
+{
+    const auto root = findRealchordsProjectRoot();
+    if (root.exists())
+    {
+        const auto pythonPath = root.getChildFile ("tools/realchords/.venv/bin/python");
+        const auto scriptPath = root.getChildFile ("tools/realchords/realchords_batch_server.py");
+        return pythonPath.getFullPathName() + " " + scriptPath.getFullPathName();
+    }
+
+    return "tools/realchords/.venv/bin/python tools/realchords/realchords_batch_server.py";
+}
+}
 
 class ReasonMainComponent::PianoRollResizer : public juce::Component
 {
@@ -89,6 +151,8 @@ ReasonMainComponent::ReasonMainComponent()
     transportBar.setKeySignatureText (session.getKeySignature());
     transportBar.setRecordActive (session.isRecording());
     transportBar.setMidiInputText ("MIDI: " + session.getSelectedMidiInputName());
+    transportBar.setMetronomeActive (session.isMetronomeEnabled());
+    lastKnownMidiInputName = session.getSelectedMidiInputName();
 
     transportBar.onPlay = [this]
     {
@@ -106,19 +170,9 @@ ReasonMainComponent::ReasonMainComponent()
         transportBar.setRecordActive (recording);
     };
 
-    transportBar.onImport = [this]
+    transportBar.onFileMenu = [this]
     {
-        showImportMenu();
-    };
-
-    transportBar.onProject = [this]
-    {
-        showProjectMenu();
-    };
-
-    transportBar.onPlugins = [this]
-    {
-        showPluginsWindow();
+        showFileMenu();
     };
 
     transportBar.onGenerateChords = [this]
@@ -133,14 +187,23 @@ ReasonMainComponent::ReasonMainComponent()
 
     transportBar.onSettings = [this]
     {
-        session.showAudioSettings();
+        showSettingsMenu();
+    };
+
+    transportBar.onMetronomeChanged = [this] (bool enabled)
+    {
+        session.setMetronomeEnabled (enabled);
     };
 
     transportBar.onTempoChanged = [this] (const juce::String& text)
     {
         const auto trimmed = text.retainCharacters ("0123456789.");
         if (trimmed.isNotEmpty())
+        {
             session.setTempoBpm (trimmed.getDoubleValue());
+            timeline.repaint();
+            pianoRoll.repaint();
+        }
     };
 
     transportBar.onTimeSignatureChanged = [this] (const juce::String& text)
@@ -285,7 +348,11 @@ void ReasonMainComponent::resized()
 {
     auto r = getLocalBounds();
 
-    auto transportArea = r.removeFromTop (72);
+    auto topArea = r.removeFromTop (72);
+    constexpr int targetTransportWidth = 1120;
+    const int maxAllowedWidth = juce::jmax (200, topArea.getWidth() - 20);
+    const int transportWidth = juce::jmin (targetTransportWidth, maxAllowedWidth);
+    auto transportArea = topArea.withSizeKeepingCentre (transportWidth, topArea.getHeight());
     transportBar.setBounds (transportArea);
 
     auto trackListArea = r.removeFromLeft (trackListWidth);
@@ -324,7 +391,16 @@ bool ReasonMainComponent::keyPressed (const juce::KeyPress& key)
 {
     if (key == juce::KeyPress::spaceKey)
     {
-        session.togglePlay();
+        if (session.isRecording())
+        {
+            session.stop();
+            transportBar.setRecordActive (false);
+            refreshSessionState();
+        }
+        else
+        {
+            session.togglePlay();
+        }
         return true;
     }
 
@@ -449,6 +525,13 @@ void ReasonMainComponent::timerCallback()
 {
     updateTimeDisplay();
     transportBar.setRecordActive (session.isRecording());
+    chordInspector.setCurrentTimeSeconds (session.getCurrentTimeSeconds());
+
+    if (++instrumentRefreshCounter >= 15)
+    {
+        instrumentRefreshCounter = 0;
+        trackList.setTrackInstrumentNames (session.getTrackInstrumentNames());
+    }
 }
 
 void ReasonMainComponent::scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart)
@@ -461,15 +544,26 @@ void ReasonMainComponent::scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved
 
 void ReasonMainComponent::updateTimeDisplay()
 {
+    session.ensureMidiInputSelection();
+    const auto currentMidiInputName = session.getSelectedMidiInputName();
+    if (currentMidiInputName != lastKnownMidiInputName)
+    {
+        lastKnownMidiInputName = currentMidiInputName;
+        if (currentMidiInputName != "No MIDI Input")
+            session.refreshMidiLiveRouting();
+    }
+
     const double timeSeconds = session.getCurrentTimeSeconds();
     const int minutes = (int) (timeSeconds / 60.0);
     const double seconds = timeSeconds - (minutes * 60.0);
 
-    transportBar.setTimeText (juce::String::formatted ("%02d:%04.1f", minutes, seconds));
+    transportBar.setTimeText (juce::String::formatted ("%02d:%06.3f", minutes, seconds));
     transportBar.setBarsText (session.getBarsAndBeatsText (timeSeconds));
     transportBar.setTempoText ("Tempo " + juce::String (session.getTempoBpm(), 1));
     transportBar.setTimeSignatureText (session.getTimeSignature());
     transportBar.setKeySignatureText (session.getKeySignature());
+    transportBar.setMidiInputText ("MIDI: " + currentMidiInputName);
+    transportBar.setMetronomeActive (session.isMetronomeEnabled());
 }
 
 void ReasonMainComponent::showImportMenu()
@@ -478,6 +572,20 @@ void ReasonMainComponent::showImportMenu()
     menu.addItem ("Import Audio...", [this] { beginImport (ImportType::audio); });
     menu.addItem ("Import MIDI...", [this] { beginImport (ImportType::midi); });
 
+    menu.showMenuAsync ({});
+}
+
+void ReasonMainComponent::showFileMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem ("New...", [this] { beginProjectAction (ProjectAction::newEdit); });
+    menu.addItem ("Open...", [this] { beginProjectAction (ProjectAction::open); });
+    menu.addSeparator();
+    menu.addItem ("Save", [this] { beginProjectAction (ProjectAction::save); });
+    menu.addItem ("Save As...", [this] { beginProjectAction (ProjectAction::saveAs); });
+    menu.addSeparator();
+    menu.addItem ("Import Audio...", [this] { beginImport (ImportType::audio); });
+    menu.addItem ("Import MIDI...", [this] { beginImport (ImportType::midi); });
     menu.showMenuAsync ({});
 }
 
@@ -619,6 +727,15 @@ void ReasonMainComponent::showPluginsWindow()
     options.launchAsync();
 }
 
+void ReasonMainComponent::showSettingsMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem ("Audio/MIDI Device Settings...", [this] { session.showAudioSettings(); });
+    menu.addSeparator();
+    menu.addItem ("Plugin Manager...", [this] { showPluginsWindow(); });
+    menu.showMenuAsync ({});
+}
+
 void ReasonMainComponent::showMidiInputMenu()
 {
     juce::PopupMenu menu;
@@ -711,7 +828,25 @@ void ReasonMainComponent::showInstrumentMenu (int trackIndex)
             : juce::String();
 
         const auto defaultName = "Track " + juce::String (trackIndex + 1);
-        if (prevTrackName == defaultName || prevTrackName == prevInstrument)
+        auto isPlaceholder = [] (const juce::String& text)
+        {
+            auto lower = text.trim().toLowerCase();
+            if (lower.isEmpty())
+                return true;
+            if (lower.contains ("untitled"))
+                return true;
+            if (lower == "instrument" || lower == "no instrument")
+                return true;
+            if (lower == "default" || lower.startsWith ("default"))
+                return true;
+            if (lower == "init" || lower.startsWith ("init"))
+                return true;
+            if (lower == "program" || lower.startsWith ("program"))
+                return true;
+            return false;
+        };
+
+        if ((prevTrackName == defaultName || prevTrackName == prevInstrument) && ! isPlaceholder (newInstrument))
             session.setTrackName (trackIndex, newInstrument);
 
         trackList.setTracks (session.getTrackNames());
@@ -791,14 +926,30 @@ void ReasonMainComponent::generateChordOptionsForSelection()
     if (! clipInfo || clipInfo->type != SessionController::ClipType::midi)
     {
         const auto clips = session.getClipsForTrack (session.getSelectedTrack());
+        const double insertionTime = session.getInsertionTimeSeconds();
+        double bestScore = std::numeric_limits<double>::max();
+        uint64_t bestClipId = 0;
+
         for (const auto& clip : clips)
         {
-            if (clip.type == SessionController::ClipType::midi)
+            if (clip.type != SessionController::ClipType::midi)
+                continue;
+
+            // Prefer clips that contain the insertion point, then nearest-start clips.
+            const double clipStart = clip.startSeconds;
+            const double clipEnd = clip.startSeconds + clip.lengthSeconds;
+            const bool containsInsertion = insertionTime >= clipStart && insertionTime <= clipEnd;
+            const double distanceToStart = std::abs (insertionTime - clipStart);
+            const double score = containsInsertion ? (distanceToStart * 0.1) : (distanceToStart + 1000.0);
+
+            if (score < bestScore)
             {
-                clipId = clip.id;
-                break;
+                bestScore = score;
+                bestClipId = clip.id;
             }
         }
+
+        clipId = bestClipId;
     }
 
     if (clipId == 0)
@@ -855,9 +1006,12 @@ void ReasonMainComponent::generateChordOptionsForSelection()
 
     isGeneratingChords = true;
 
-    std::thread ([this, payload, clipId]
+    const auto baseUrl = getRealchordsBaseUrl();
+    const auto startHint = getRealchordsStartHint();
+
+    std::thread ([this, payload, clipId, baseUrl, startHint]
     {
-        juce::URL url ("http://127.0.0.1:8090/generate");
+        juce::URL url (baseUrl + "/generate");
         url = url.withPOSTData (payload);
         int statusCode = 0;
         auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
@@ -869,12 +1023,13 @@ void ReasonMainComponent::generateChordOptionsForSelection()
         std::unique_ptr<juce::InputStream> stream (url.createInputStream (options));
         if (stream == nullptr)
         {
-            juce::MessageManager::callAsync ([this]
+            juce::MessageManager::callAsync ([this, baseUrl, startHint]
             {
                 isGeneratingChords = false;
                 juce::AlertWindow::showMessageBoxAsync (juce::AlertWindow::WarningIcon,
                                                        "Generate Chords",
-                                                       "Could not reach the Realchords batch server at http://127.0.0.1:8090.");
+                                                       "Could not reach the Realchords batch server at " + baseUrl
+                                                           + ".\n\nStart it with:\n" + startHint);
             });
             return;
         }
@@ -991,7 +1146,7 @@ void ReasonMainComponent::ensureRealchordsServer()
 
 bool ReasonMainComponent::pingRealchordsServer (int timeoutMs)
 {
-    juce::URL url ("http://127.0.0.1:8090/health");
+    juce::URL url (getRealchordsBaseUrl() + "/health");
     auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
                        .withConnectionTimeoutMs (timeoutMs)
                        .withNumRedirectsToFollow (1);
@@ -1008,14 +1163,16 @@ void ReasonMainComponent::startRealchordsServer()
     if (realchordsProcess != nullptr && realchordsProcess->isRunning())
         return;
 
-    juce::File projectRoot = juce::File::getCurrentWorkingDirectory();
-    if (! projectRoot.getChildFile ("tools/realchords").exists())
+    juce::File projectRoot = findRealchordsProjectRoot();
+    if (! projectRoot.exists())
         return;
 
     const juce::String pythonPath = projectRoot.getChildFile ("tools/realchords/.venv/bin/python").getFullPathName();
     const juce::String scriptPath = projectRoot.getChildFile ("tools/realchords/realchords_batch_server.py").getFullPathName();
 
-    const juce::String command = pythonPath + " " + scriptPath;
+    const juce::String command = "REALCHORDS_HOST=" + getRealchordsHost()
+                                 + " REALCHORDS_PORT=" + juce::String (getRealchordsPort())
+                                 + " \"" + pythonPath + "\" \"" + scriptPath + "\"";
     realchordsProcess = std::make_unique<juce::ChildProcess>();
     realchordsProcess->start (command);
 }
@@ -1087,18 +1244,21 @@ void ReasonMainComponent::refreshChordInspector()
     auto labels = session.getChordLabelsForTrack (trackIndex);
     juce::StringArray lines;
     juce::StringArray symbols;
+    juce::Array<double> starts;
     for (const auto& label : labels)
     {
         const auto timeText = session.getBarsAndBeatsText (label.startSeconds);
         lines.add (timeText + "  " + label.symbol);
         symbols.add (label.symbol);
+        starts.add (label.startSeconds);
     }
 
     juce::String staff;
     if (! symbols.isEmpty())
         staff = "| " + symbols.joinIntoString (" | ") + " |";
 
-    chordInspector.setChords (trackName, lines, staff);
+    chordInspector.setChords (trackName, lines, starts, staff);
+    chordInspector.setCurrentTimeSeconds (session.getCurrentTimeSeconds());
 }
 
 void ReasonMainComponent::refreshSessionState()

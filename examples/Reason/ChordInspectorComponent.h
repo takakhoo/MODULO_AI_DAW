@@ -10,7 +10,9 @@ public:
 
     void setChords (const juce::String& trackName,
                     const juce::StringArray& chordLines,
+                    const juce::Array<double>& chordStartTimesSeconds,
                     const juce::String& staffText);
+    void setCurrentTimeSeconds (double timeSeconds);
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -23,4 +25,7 @@ private:
     juce::ListBox chordList;
     juce::Label staffLabel;
     juce::StringArray lines;
+    juce::Array<double> chordStarts;
+    double currentTimeSeconds = 0.0;
+    int activeRow = -1;
 };

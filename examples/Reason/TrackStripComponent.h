@@ -6,6 +6,7 @@ class TrackStripComponent : public juce::Component
 {
 public:
     explicit TrackStripComponent (int index);
+    ~TrackStripComponent() override;
 
     void setTrackName (const juce::String& name);
     void setInstrumentName (const juce::String& name);
@@ -33,15 +34,27 @@ public:
     void mouseUp (const juce::MouseEvent& event) override;
 
 private:
+    struct GainSliderLookAndFeel : public juce::LookAndFeel_V4
+    {
+        void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
+                               float sliderPos, float minSliderPos, float maxSliderPos,
+                               const juce::Slider::SliderStyle style, juce::Slider& slider) override;
+    };
+
+    void updateGainReadout (float normalizedValue);
+
     int trackIndex = 0;
     bool isSelected = false;
 
     juce::Label numberLabel;
     juce::Label nameLabel;
     juce::Slider volumeSlider;
+    juce::Label gainLabel;
+    juce::Label gainValueLabel;
     juce::TextButton instrumentButton { "Instrument" };
     juce::TextButton fxButton { "FX" };
     juce::TextButton muteButton { "M" };
     juce::TextButton soloButton { "S" };
-    juce::TextButton aiButton { "AI" };
+    juce::Rectangle<int> gainSliderBounds;
+    GainSliderLookAndFeel gainSliderLaf;
 };

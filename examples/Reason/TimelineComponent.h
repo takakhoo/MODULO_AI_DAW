@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <unordered_set>
 #include <unordered_map>
 
 #include "SessionController.h"
@@ -25,8 +26,8 @@ public:
     void addIdeaMarker (double timeSeconds);
     void setView (double newViewStartSeconds, double newPixelsPerSecond);
     uint64_t getSelectedClipId() const noexcept { return selectedClipId; }
-    void setSelectedClipId (uint64_t newId) { selectedClipId = newId; repaint(); }
-    void clearSelection() noexcept { selectedClipId = 0; repaint(); }
+    void setSelectedClipId (uint64_t newId);
+    void clearSelection() noexcept;
     double getViewStartSeconds() const noexcept { return viewStartSeconds; }
     double getPixelsPerSecond() const noexcept { return pixelsPerSecond; }
     int getHeaderHeight() const noexcept { return rulerHeight + markerLaneHeight; }
@@ -39,8 +40,10 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent& event) override;
+    void mouseMove (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
+    void mouseExit (const juce::MouseEvent& event) override;
     void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& details) override;
     void mouseMagnify (const juce::MouseEvent& event, float scaleFactor) override;
     void mouseDoubleClick (const juce::MouseEvent& event) override;
@@ -71,6 +74,13 @@ private:
         juce::Rectangle<int> bounds;
     };
 
+    enum class ResizeEdge
+    {
+        none,
+        left,
+        right
+    };
+
     void timerCallback() override;
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
@@ -94,6 +104,9 @@ private:
     void drawMarkerLane (juce::Graphics& g, juce::Rectangle<int> area) const;
     void drawGridLines (juce::Graphics& g, juce::Rectangle<int> area) const;
     void drawClip (juce::Graphics& g, const ClipRect& clipRect) const;
+    const ClipRect* findClipRectAt (juce::Point<int> position, std::vector<ClipRect>& clipRects) const;
+    ResizeEdge getClipResizeEdgeAt (const ClipRect& clipRect, juce::Point<int> position) const;
+    void updateMouseCursorForPosition (juce::Point<int> position);
 
     SessionController* session = nullptr;
 
@@ -111,12 +124,23 @@ private:
     int scrollOffset = 0;
 
     uint64_t selectedClipId = 0;
+    std::unordered_set<uint64_t> selectedClipIds;
+
     uint64_t draggingClipId = 0;
     double dragStartSeconds = 0.0;
     double dragOffsetSeconds = 0.0;
     double clipOriginalStartSeconds = 0.0;
+    double clipOriginalLengthSeconds = 0.0;
+    double resizePreviewStartSeconds = 0.0;
+    double resizePreviewLengthSeconds = 0.0;
+    bool isResizingClip = false;
+    ResizeEdge activeResizeEdge = ResizeEdge::none;
+    int resizeHoverEdgeMarginPx = 6;
     int dragSourceTrackIndex = -1;
     int dragTargetTrackIndex = -1;
+    int dragTrackDelta = 0;
+    std::unordered_map<uint64_t, double> dragOriginalClipStarts;
+    std::unordered_map<uint64_t, int> dragOriginalClipTracks;
 
     std::vector<IdeaMarker> markers;
     uint64_t nextMarkerId = 1;

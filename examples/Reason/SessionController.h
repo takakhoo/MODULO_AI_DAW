@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <optional>
+#include <unordered_map>
 
 #include "../common/Utilities.h"
 
@@ -51,6 +52,7 @@ public:
         double startSeconds = 0.0;
         double lengthSeconds = 0.0;
         int noteNumber = 0;
+        int velocity = 100;
     };
 
     struct SustainEvent
@@ -153,6 +155,8 @@ public:
     juce::String getKeySignature() const;
     bool setKeySignature (const juce::String& text);
     juce::String getBarsAndBeatsText (double seconds) const;
+    bool isMetronomeEnabled() const;
+    void setMetronomeEnabled (bool enabled);
 
     bool undo();
     bool redo();
@@ -169,6 +173,8 @@ public:
 
     bool moveClip (uint64_t clipId, double newStartSeconds);
     bool moveClipToTrack (uint64_t clipId, int targetTrackIndex, double newStartSeconds);
+    bool resizeClipLength (uint64_t clipId, double newLengthSeconds);
+    bool resizeClipRange (uint64_t clipId, double newStartSeconds, double newLengthSeconds);
     uint64_t duplicateClipToTrack (uint64_t clipId, int targetTrackIndex, double newStartSeconds);
     bool deleteClip (uint64_t clipId);
     bool deleteTrack (int trackIndex);
@@ -199,8 +205,18 @@ public:
     std::unique_ptr<te::Plugin::EditorComponent> createPluginEditor (uint64_t pluginId);
 
     void showAudioSettings();
+    void ensureMidiInputSelection();
+    void refreshMidiLiveRouting();
 
 private:
+    struct RecordingPreviewState
+    {
+        double startSeconds = 0.0;
+        std::unordered_map<int, double> activeNotes;
+        std::vector<NotePreview> finishedNotes;
+        std::vector<SustainEvent> sustainEvents;
+    };
+
     te::AudioTrack* getAudioTrack (int index) const;
     te::Clip* findClipById (uint64_t clipId) const;
     te::MidiClip* findMidiClipById (uint64_t clipId) const;
@@ -210,16 +226,25 @@ private:
     bool isInstrumentPlugin (te::Plugin& plugin) const;
     void removeInstrumentPlugins (te::AudioTrack& track);
     bool insertDefaultInstrumentIfAvailable (int trackIndex);
+    void configureMidiInputRoutingForLivePlay();
     bool prepareMidiRecording();
+    te::InputDeviceInstance* findMidiInputInstanceForSelectedDevice() const;
+    void commitRecordingPreviewFallback (const std::unordered_map<uint64_t, RecordingPreviewState>& snapshot,
+                                         const juce::Array<int>& midiClipCountsBefore,
+                                         double stopTimeSeconds);
+    void ensureMidiRecordingActive();
     te::MidiNote* findMidiNote (te::MidiClip& clip, const juce::ValueTree& noteState) const;
     te::Plugin::Ptr duplicateInstrumentPlugin (te::AudioTrack& destination, const te::AudioTrack& source);
+    std::optional<ClipInfo> buildRecordingPreview (te::AudioTrack& track, int trackIndex) const;
 
-    te::Engine engine { "Reason", std::make_unique<ExtendedUIBehaviour>(), nullptr };
+    te::Engine engine { "Modulo", std::make_unique<ExtendedUIBehaviour>(), nullptr };
     std::unique_ptr<te::Edit> edit;
     te::TransportControl* transport = nullptr;
 
     int selectedTrackIndex = 0;
     double cursorTimeSeconds = 0.0;
+    double lastRecordStartSeconds = 0.0;
     juce::String selectedMidiDeviceId;
     std::vector<bool> trackArmed;
+    mutable std::unordered_map<uint64_t, RecordingPreviewState> recordingPreview;
 };

@@ -7,8 +7,148 @@
 
 namespace
 {
-constexpr float kMinTrackDb = -60.0f;
+constexpr float kMinTrackDb = -10.0f;
 constexpr float kMaxTrackDb = 6.0f;
+const juce::Identifier kInstrumentLabelId ("reasonInstrumentLabel");
+constexpr double kMaxReasonableClipLengthSeconds = 60.0 * 20.0; // 20 minutes
+
+bool isPlaceholderProgramName (const juce::String& name)
+{
+    auto trimmed = name.trim();
+    if (trimmed.isEmpty())
+        return true;
+
+    const auto lower = trimmed.toLowerCase();
+    if (lower.contains ("untitled"))
+        return true;
+    if (lower == "default" || lower.startsWith ("default"))
+        return true;
+    if (lower == "init" || lower.startsWith ("init"))
+        return true;
+    if (lower == "program" || lower.startsWith ("program"))
+        return true;
+
+    return false;
+}
+
+juce::String fallbackExternalInstrumentName (const te::ExternalPlugin& external)
+{
+    auto candidate = external.desc.name.trim();
+    if (! isPlaceholderProgramName (candidate))
+        return candidate;
+
+    candidate = external.desc.manufacturerName.trim();
+    if (candidate.isNotEmpty() && ! isPlaceholderProgramName (candidate))
+        return candidate + " Instrument";
+
+    candidate = external.desc.pluginFormatName.trim();
+    if (candidate.isNotEmpty() && ! isPlaceholderProgramName (candidate))
+        return candidate + " Instrument";
+
+    return {};
+}
+
+juce::String bestLabelForDescription (const juce::PluginDescription& desc)
+{
+    auto candidate = desc.name.trim();
+    if (! isPlaceholderProgramName (candidate))
+        return candidate;
+
+    candidate = desc.manufacturerName.trim();
+    if (candidate.isNotEmpty() && ! isPlaceholderProgramName (candidate))
+        return candidate + " Instrument";
+
+    candidate = desc.pluginFormatName.trim();
+    if (candidate.isNotEmpty() && ! isPlaceholderProgramName (candidate))
+        return candidate + " Instrument";
+
+    candidate = desc.category.trim();
+    if (candidate.isNotEmpty() && ! isPlaceholderProgramName (candidate))
+        return candidate;
+
+    return {};
+}
+
+juce::String boolToText (bool v) { return v ? "true" : "false"; }
+
+te::SettingID getKnownPluginListSettingId()
+{
+   #if JUCE_64BIT
+    return te::SettingID::knownPluginList64;
+   #else
+    return te::SettingID::knownPluginList;
+   #endif
+}
+
+void migrateLegacyReasonPluginListIfNeeded (te::Engine& engine)
+{
+    auto& pluginManager = engine.getPluginManager();
+    auto hasExternalPlugins = [] (const juce::Array<juce::PluginDescription>& types)
+    {
+        for (const auto& type : types)
+        {
+            const auto format = type.pluginFormatName;
+            if (format.equalsIgnoreCase ("AudioUnit")
+                || format.equalsIgnoreCase ("VST3")
+                || format.equalsIgnoreCase ("VST"))
+                return true;
+        }
+        return false;
+    };
+
+    if (hasExternalPlugins (pluginManager.knownPluginList.getTypes()))
+        return;
+
+    const auto legacySettings = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                                    .getChildFile ("Reason")
+                                    .getChildFile ("Settings.xml");
+    if (! legacySettings.existsAsFile())
+        return;
+
+    juce::PropertiesFile::Options options;
+    options.millisecondsBeforeSaving = 0;
+    options.storageFormat = juce::PropertiesFile::storeAsXML;
+
+    juce::PropertiesFile legacyProps (legacySettings, options);
+
+    const auto key = getKnownPluginListSettingId();
+    std::unique_ptr<juce::XmlElement> legacyListXml (legacyProps.getXmlValue (te::PropertyStorage::settingToString (key)));
+    if (legacyListXml == nullptr)
+        return;
+
+    juce::KnownPluginList migratedList;
+    migratedList.recreateFromXml (*legacyListXml);
+    if (! hasExternalPlugins (migratedList.getTypes()))
+        return;
+
+    pluginManager.knownPluginList.recreateFromXml (*legacyListXml);
+    engine.getPropertyStorage().setXmlProperty (key, *legacyListXml);
+    engine.getPropertyStorage().getPropertiesFile().saveIfNeeded();
+}
+
+juce::File getRecordDebugFile()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                   .getChildFile ("ReasonLogs");
+    dir.createDirectory();
+    return dir.getChildFile ("record_debug.log");
+}
+
+void logRecordDebug (const juce::String& message)
+{
+    const auto line = "[" + juce::Time::getCurrentTime().toString (true, true, true, true) + "] " + message;
+    DBG (line);
+
+    [[ maybe_unused ]] const bool ok = getRecordDebugFile().appendText (line + "\n", false, false, "\n");
+}
+
+juce::String summariseTrackArmed (const std::vector<bool>& trackArmed)
+{
+    juce::StringArray parts;
+    for (size_t i = 0; i < trackArmed.size(); ++i)
+        parts.add ("T" + juce::String ((int) i) + "=" + boolToText (trackArmed[i]));
+    return parts.joinIntoString (", ");
+}
 }
 
 std::unique_ptr<juce::Component> ExtendedUIBehaviour::createPluginWindow (te::PluginWindowState& state)
@@ -23,9 +163,12 @@ void ExtendedUIBehaviour::recreatePluginWindowContentAsync (te::Plugin& plugin)
 
 SessionController::SessionController()
 {
+    migrateLegacyReasonPluginListIfNeeded (engine);
+
     auto tempDir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Reason");
     tempDir.createDirectory();
     auto editFile = tempDir.getNonexistentChildFile ("Untitled", ".tracktionedit", false);
+    logRecordDebug ("SessionController ctor. Log file: " + getRecordDebugFile().getFullPathName());
     createNewEdit (editFile);
 }
 
@@ -40,7 +183,46 @@ void SessionController::stop()
     if (transport == nullptr)
         return;
 
+    logRecordDebug ("stop() called. isRecording=" + boolToText (transport->isRecording()));
+    const bool wasRecording = transport->isRecording();
+    const auto previewSnapshot = recordingPreview;
+    juce::Array<int> midiClipCountsBefore;
+    if (edit != nullptr)
+    {
+        auto tracks = te::getAudioTracks (*edit);
+        for (int i = 0; i < tracks.size(); ++i)
+        {
+            int midiClips = 0;
+            for (auto* clip : tracks.getUnchecked (i)->getClips())
+                if (dynamic_cast<te::MidiClip*> (clip) != nullptr)
+                    ++midiClips;
+            midiClipCountsBefore.add (midiClips);
+        }
+    }
+
     transport->stop (false, false);
+
+    if (wasRecording)
+    {
+        commitRecordingPreviewFallback (previewSnapshot, midiClipCountsBefore, transport->getPosition().inSeconds());
+        recordingPreview.clear();
+    }
+
+    if (edit != nullptr)
+    {
+        auto tracks = te::getAudioTracks (*edit);
+        juce::StringArray perTrack;
+        for (int i = 0; i < tracks.size(); ++i)
+        {
+            int midiClips = 0;
+            for (auto* clip : tracks.getUnchecked (i)->getClips())
+                if (dynamic_cast<te::MidiClip*> (clip) != nullptr)
+                    ++midiClips;
+            perTrack.add ("Track" + juce::String (i) + ":midiClips=" + juce::String (midiClips));
+        }
+        logRecordDebug ("stop() finished. " + perTrack.joinIntoString (" | "));
+    }
+
     cursorTimeSeconds = transport->getPosition().inSeconds();
 }
 
@@ -50,19 +232,60 @@ bool SessionController::toggleRecord()
         return false;
 
     const bool wasRecording = transport->isRecording();
+    logRecordDebug ("toggleRecord() called. wasRecording=" + boolToText (wasRecording)
+                    + ", selectedTrack=" + juce::String (selectedTrackIndex)
+                    + ", selectedMidiDeviceId=" + selectedMidiDeviceId
+                    + ", armed={" + summariseTrackArmed (trackArmed) + "}");
 
     if (! wasRecording)
     {
         if (! prepareMidiRecording())
+        {
+            logRecordDebug ("toggleRecord() start aborted: prepareMidiRecording failed");
             return false;
+        }
 
         transport->setPosition (te::TimePosition::fromSeconds (cursorTimeSeconds));
+        lastRecordStartSeconds = transport->getPosition().inSeconds();
+        transport->record (false);
+        logRecordDebug ("toggleRecord() started. isRecording=" + boolToText (transport->isRecording()));
     }
+    else
+    {
+        const auto previewSnapshot = recordingPreview;
+        juce::Array<int> midiClipCountsBefore;
+        if (edit != nullptr)
+        {
+            auto tracks = te::getAudioTracks (*edit);
+            for (int i = 0; i < tracks.size(); ++i)
+            {
+                int midiClips = 0;
+                for (auto* clip : tracks.getUnchecked (i)->getClips())
+                    if (dynamic_cast<te::MidiClip*> (clip) != nullptr)
+                        ++midiClips;
+                midiClipCountsBefore.add (midiClips);
+            }
+        }
 
-    EngineHelpers::toggleRecord (*edit);
-
-    if (wasRecording)
-        te::EditFileOperations (*edit).save (true, true, false);
+        transport->stop (false, false);
+        commitRecordingPreviewFallback (previewSnapshot, midiClipCountsBefore, transport->getPosition().inSeconds());
+        recordingPreview.clear();
+        logRecordDebug ("toggleRecord() stopped. isRecording=" + boolToText (transport->isRecording()));
+        if (edit != nullptr)
+        {
+            auto tracks = te::getAudioTracks (*edit);
+            juce::StringArray perTrack;
+            for (int i = 0; i < tracks.size(); ++i)
+            {
+                int midiClips = 0;
+                for (auto* clip : tracks.getUnchecked (i)->getClips())
+                    if (dynamic_cast<te::MidiClip*> (clip) != nullptr)
+                        ++midiClips;
+                perTrack.add ("Track" + juce::String (i) + ":midiClips=" + juce::String (midiClips));
+            }
+            logRecordDebug ("toggleRecord() clip snapshot after stop: " + perTrack.joinIntoString (" | "));
+        }
+    }
 
     return transport->isRecording();
 }
@@ -96,6 +319,9 @@ bool SessionController::createNewEdit (const juce::File& editFile)
     ensureTrackStateSize();
     if (! trackArmed.empty())
         trackArmed[0] = true;
+    ensureMidiInputSelection();
+    configureMidiInputRoutingForLivePlay();
+    recordingPreview.clear();
     insertDefaultInstrumentIfAvailable (0);
     te::EditFileOperations (*edit).save (true, true, false);
     return true;
@@ -122,6 +348,11 @@ bool SessionController::openEdit (const juce::File& editFile)
     selectedTrackIndex = 0;
     updateTrackNames();
     ensureTrackStateSize();
+    if (! trackArmed.empty())
+        trackArmed[0] = true;
+    ensureMidiInputSelection();
+    configureMidiInputRoutingForLivePlay();
+    recordingPreview.clear();
     return true;
 }
 
@@ -152,6 +383,8 @@ void SessionController::setSelectedTrack (int index)
 
     if (selectedTrackIndex >= 0 && selectedTrackIndex < (int) trackArmed.size())
         trackArmed[(size_t) selectedTrackIndex] = true;
+
+    configureMidiInputRoutingForLivePlay();
 }
 
 void SessionController::setTrackArmed (int index, bool shouldArm)
@@ -164,6 +397,7 @@ void SessionController::setTrackArmed (int index, bool shouldArm)
         return;
 
     trackArmed[(size_t) index] = shouldArm;
+    configureMidiInputRoutingForLivePlay();
 }
 
 bool SessionController::isTrackArmed (int index) const
@@ -227,6 +461,36 @@ void SessionController::setSelectedMidiInputIndex (int index)
     }
 
     selectedMidiDeviceId = devices[(size_t) index]->getDeviceID();
+    configureMidiInputRoutingForLivePlay();
+}
+
+void SessionController::ensureMidiInputSelection()
+{
+    auto devices = engine.getDeviceManager().getMidiInDevices();
+    if (devices.empty())
+    {
+        selectedMidiDeviceId.clear();
+        return;
+    }
+
+    if (selectedMidiDeviceId.isEmpty())
+    {
+        selectedMidiDeviceId = devices.front()->getDeviceID();
+        return;
+    }
+
+    for (auto& device : devices)
+    {
+        if (device->getDeviceID() == selectedMidiDeviceId)
+            return;
+    }
+
+    selectedMidiDeviceId = devices.front()->getDeviceID();
+}
+
+void SessionController::refreshMidiLiveRouting()
+{
+    configureMidiInputRoutingForLivePlay();
 }
 
 int SessionController::getTrackCount() const
@@ -270,11 +534,50 @@ juce::StringArray SessionController::getTrackInstrumentNames() const
     {
         juce::String instrument = "No Instrument";
         auto* track = tracks.getUnchecked (i);
+        const auto trackName = track->getName().trim();
+        auto storedLabel = track->state.getProperty (kInstrumentLabelId).toString().trim();
+        if (storedLabel.isNotEmpty() && (isPlaceholderProgramName (storedLabel)
+                                         || storedLabel.equalsIgnoreCase (trackName)))
+            storedLabel.clear();
         for (auto* plugin : track->pluginList)
         {
             if (plugin != nullptr && isInstrumentPlugin (*plugin))
             {
-                instrument = plugin->getName();
+                juce::String display;
+                if (auto* external = dynamic_cast<te::ExternalPlugin*> (plugin))
+                {
+                    auto programName = external->getCurrentProgramName();
+                    if (! isPlaceholderProgramName (programName))
+                        display = programName.trim();
+
+                    if (isPlaceholderProgramName (display))
+                        display = fallbackExternalInstrumentName (*external);
+
+                    if (isPlaceholderProgramName (display))
+                    {
+                        auto pluginName = external->getName().trim();
+                        if (! isPlaceholderProgramName (pluginName))
+                            display = pluginName;
+                    }
+                }
+                else
+                {
+                    display = plugin->getName();
+                }
+
+                if (display.equalsIgnoreCase (trackName))
+                    display.clear();
+
+                if (isPlaceholderProgramName (display) && storedLabel.isNotEmpty())
+                    display = storedLabel;
+
+                if (isPlaceholderProgramName (display))
+                    display = plugin->getPluginType();
+
+                if (isPlaceholderProgramName (display))
+                    display = "Instrument";
+
+                instrument = display;
                 break;
             }
         }
@@ -443,7 +746,7 @@ double SessionController::getTempoBpm() const
     if (edit == nullptr)
         return 120.0;
 
-    const auto& tempo = edit->tempoSequence.getTempoAt (te::TimePosition::fromSeconds (cursorTimeSeconds));
+    const auto& tempo = edit->tempoSequence.getTempoAt (te::TimePosition::fromSeconds (0.0));
     return tempo.getBpm();
 }
 
@@ -453,7 +756,7 @@ void SessionController::setTempoBpm (double bpm)
         return;
 
     const double clamped = juce::jlimit (20.0, 300.0, bpm);
-    auto& tempo = edit->tempoSequence.getTempoAt (te::TimePosition::fromSeconds (cursorTimeSeconds));
+    auto& tempo = edit->tempoSequence.getTempoAt (te::TimePosition::fromSeconds (0.0));
     tempo.setBpm (clamped);
 }
 
@@ -462,7 +765,7 @@ juce::String SessionController::getTimeSignature() const
     if (edit == nullptr)
         return "4/4";
 
-    auto& timeSig = edit->tempoSequence.getTimeSigAt (te::TimePosition::fromSeconds (cursorTimeSeconds));
+    auto& timeSig = edit->tempoSequence.getTimeSigAt (te::TimePosition::fromSeconds (0.0));
     return timeSig.getStringTimeSig();
 }
 
@@ -518,6 +821,19 @@ bool SessionController::setKeySignature (const juce::String& text)
     pitchSetting.setPitch (pitchValue);
     pitchSetting.setScaleID (scaleType);
     return true;
+}
+
+bool SessionController::isMetronomeEnabled() const
+{
+    return edit != nullptr && edit->clickTrackEnabled;
+}
+
+void SessionController::setMetronomeEnabled (bool enabled)
+{
+    if (edit == nullptr)
+        return;
+
+    edit->clickTrackEnabled = enabled;
 }
 
 juce::String SessionController::getBarsAndBeatsText (double seconds) const
@@ -671,6 +987,8 @@ std::vector<SessionController::ClipInfo> SessionController::getClipsForTrack (in
         auto range = clip->getEditTimeRange();
         info.startSeconds = range.getStart().inSeconds();
         info.lengthSeconds = range.getLength().inSeconds();
+        if (! std::isfinite (info.lengthSeconds) || info.lengthSeconds <= 0.0 || info.lengthSeconds > kMaxReasonableClipLengthSeconds)
+            info.lengthSeconds = 4.0;
 
         if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
         {
@@ -698,7 +1016,127 @@ std::vector<SessionController::ClipInfo> SessionController::getClipsForTrack (in
         clips.push_back (info);
     }
 
+    if (auto preview = buildRecordingPreview (*track, trackIndex))
+        clips.push_back (*preview);
+
     return clips;
+}
+
+std::optional<SessionController::ClipInfo> SessionController::buildRecordingPreview (te::AudioTrack& track, int trackIndex) const
+{
+    if (edit == nullptr || transport == nullptr)
+        return std::nullopt;
+
+    const auto trackId = track.itemID.getRawID();
+
+    if (! transport->isRecording())
+    {
+        recordingPreview.erase (trackId);
+        return std::nullopt;
+    }
+
+    bool hasActiveRecording = false;
+    double startSeconds = 0.0;
+
+    auto& preview = recordingPreview[trackId];
+
+    for (auto* instance : edit->getAllInputDevices())
+    {
+        if (instance == nullptr)
+            continue;
+
+        if (! instance->isRecordingActive (track.itemID))
+            continue;
+
+        hasActiveRecording = true;
+        startSeconds = instance->getPunchInTime (track.itemID).inSeconds();
+
+        if (preview.startSeconds != startSeconds)
+        {
+            preview.startSeconds = startSeconds;
+            preview.activeNotes.clear();
+            preview.finishedNotes.clear();
+            preview.sustainEvents.clear();
+        }
+
+        if (auto fifo = instance->getRecordingNotes (track.itemID))
+        {
+            juce::MidiMessage message;
+            while (fifo->pop (message))
+            {
+                const double now = getCurrentTimeSeconds();
+                double time = message.getTimeStamp();
+                // Some MIDI backends report timestamps in a different clock domain
+                // (e.g. host uptime/epoch). Normalize those to transport time.
+                if (! std::isfinite (time)
+                    || time < (preview.startSeconds - 5.0)
+                    || time > (now + 30.0))
+                {
+                    time = now;
+                }
+                const int noteNumber = message.getNoteNumber();
+
+                if (message.isNoteOn())
+                {
+                    preview.activeNotes[noteNumber] = time;
+                }
+                else if (message.isNoteOff())
+                {
+                    auto it = preview.activeNotes.find (noteNumber);
+                    if (it != preview.activeNotes.end())
+                    {
+                        if (time < it->second)
+                            time = it->second + 0.01;
+
+                        NotePreview note;
+                        note.startSeconds = it->second;
+                        note.lengthSeconds = juce::jmax (0.01, time - it->second);
+                        note.noteNumber = noteNumber;
+                        preview.finishedNotes.push_back (note);
+                        preview.activeNotes.erase (it);
+                    }
+                }
+                else if (message.isController() && message.getControllerNumber() == 64)
+                {
+                    SustainEvent ev;
+                    ev.timeSeconds = time;
+                    ev.value = message.getControllerValue();
+                    preview.sustainEvents.push_back (ev);
+                }
+            }
+        }
+    }
+
+    if (! hasActiveRecording)
+    {
+        recordingPreview.erase (trackId);
+        return std::nullopt;
+    }
+
+    ClipInfo info;
+    info.id = 0;
+    info.trackIndex = trackIndex;
+    info.type = ClipType::midi;
+    info.name = "Recording...";
+    info.startSeconds = preview.startSeconds;
+
+    const double currentTime = getCurrentTimeSeconds();
+    info.lengthSeconds = juce::jmax (0.01, currentTime - preview.startSeconds);
+    info.notes = preview.finishedNotes;
+
+    for (const auto& active : preview.activeNotes)
+    {
+        NotePreview note;
+        note.startSeconds = active.second;
+        note.lengthSeconds = juce::jmax (0.01, currentTime - active.second);
+        note.noteNumber = active.first;
+        info.notes.push_back (note);
+    }
+
+    std::sort (preview.sustainEvents.begin(), preview.sustainEvents.end(),
+               [] (const SustainEvent& a, const SustainEvent& b) { return a.timeSeconds < b.timeSeconds; });
+
+    return info;
 }
 
 std::optional<SessionController::ClipInfo> SessionController::getClipInfo (uint64_t clipId) const
@@ -725,6 +1163,8 @@ std::optional<SessionController::ClipInfo> SessionController::getClipInfo (uint6
             auto range = clip->getEditTimeRange();
             info.startSeconds = range.getStart().inSeconds();
             info.lengthSeconds = range.getLength().inSeconds();
+            if (! std::isfinite (info.lengthSeconds) || info.lengthSeconds <= 0.0 || info.lengthSeconds > kMaxReasonableClipLengthSeconds)
+                info.lengthSeconds = 4.0;
 
             if (dynamic_cast<te::MidiClip*> (clip) != nullptr)
             {
@@ -784,6 +1224,44 @@ bool SessionController::moveClipToTrack (uint64_t clipId, int targetTrackIndex, 
     clip->setStart (start, false, true);
     cursorTimeSeconds = start.inSeconds();
     updateTrackNames();
+    return true;
+}
+
+bool SessionController::resizeClipLength (uint64_t clipId, double newLengthSeconds)
+{
+    if (edit == nullptr)
+        return false;
+
+    auto* clip = findClipById (clipId);
+    if (clip == nullptr)
+        return false;
+
+    auto& undoManager = edit->getUndoManager();
+    undoManager.beginNewTransaction ("Resize Clip");
+    const auto length = te::TimeDuration::fromSeconds (juce::jmax (0.01, newLengthSeconds));
+    clip->setLength (length, true);
+    return true;
+}
+
+bool SessionController::resizeClipRange (uint64_t clipId, double newStartSeconds, double newLengthSeconds)
+{
+    if (edit == nullptr)
+        return false;
+
+    auto* clip = findClipById (clipId);
+    if (clip == nullptr)
+        return false;
+
+    const double safeStart = juce::jmax (0.0, newStartSeconds);
+    const double safeLength = juce::jmax (0.01, newLengthSeconds);
+    const double safeEnd = safeStart + safeLength;
+
+    auto& undoManager = edit->getUndoManager();
+    undoManager.beginNewTransaction ("Resize Clip");
+
+    // Preserve sync so resizing behaves like trimming without shifting notes.
+    clip->setStart (te::TimePosition::fromSeconds (safeStart), true, false);
+    clip->setEnd (te::TimePosition::fromSeconds (safeEnd), true);
     return true;
 }
 
@@ -896,6 +1374,7 @@ std::vector<SessionController::MidiNoteInfo> SessionController::getMidiNotesForC
         info.startSeconds = timeRange.getStart().inSeconds();
         info.lengthSeconds = timeRange.getLength().inSeconds();
         info.noteNumber = note->getNoteNumber();
+        info.velocity = note->getVelocity();
         notes.push_back (info);
     }
 
@@ -1392,6 +1871,25 @@ uint64_t SessionController::insertInstrument (int trackIndex, const PluginChoice
 
     const int insertIndex = getInsertIndexBeforeVolume (*track);
     track->pluginList.insertPlugin (plugin, insertIndex, nullptr);
+
+    juce::String label = bestLabelForDescription (choice.description);
+    if (isPlaceholderProgramName (label))
+        label.clear();
+
+    if (label.isEmpty())
+        label = plugin->getName().trim();
+
+    if (isPlaceholderProgramName (label))
+        label = choice.description.name.trim();
+
+    if (isPlaceholderProgramName (label))
+        label.clear();
+
+    if (label.isNotEmpty())
+        track->state.setProperty (kInstrumentLabelId, label, nullptr);
+    else
+        track->state.removeProperty (kInstrumentLabelId, nullptr);
+
     return plugin->itemID.getRawID();
 }
 
@@ -1588,18 +2086,151 @@ bool SessionController::insertDefaultInstrumentIfAvailable (int trackIndex)
     return insertInstrument (trackIndex, choice) != 0;
 }
 
+void SessionController::configureMidiInputRoutingForLivePlay()
+{
+    if (edit == nullptr)
+        return;
+
+    ensureTrackStateSize();
+    ensureMidiInputSelection();
+
+    auto devices = engine.getDeviceManager().getMidiInDevices();
+    if (devices.empty())
+    {
+        logRecordDebug ("configureMidiInputRoutingForLivePlay: no MIDI devices");
+        return;
+    }
+
+    te::MidiInputDevice* selectedDevice = nullptr;
+    for (auto& device : devices)
+    {
+        if (device->getDeviceID() == selectedMidiDeviceId)
+        {
+            selectedDevice = device.get();
+            break;
+        }
+    }
+
+    if (selectedDevice == nullptr)
+    {
+        selectedDevice = devices.front().get();
+        selectedMidiDeviceId = selectedDevice->getDeviceID();
+    }
+
+    if (! selectedDevice->isEnabled())
+        selectedDevice->setEnabled (true);
+
+    devices = engine.getDeviceManager().getMidiInDevices();
+    selectedDevice = nullptr;
+    for (auto& device : devices)
+    {
+        if (device->getDeviceID() == selectedMidiDeviceId)
+        {
+            selectedDevice = device.get();
+            break;
+        }
+    }
+
+    if (selectedDevice == nullptr && ! devices.empty())
+    {
+        selectedDevice = devices.front().get();
+        selectedMidiDeviceId = selectedDevice->getDeviceID();
+    }
+
+    if (selectedDevice == nullptr)
+    {
+        logRecordDebug ("configureMidiInputRoutingForLivePlay: selected device null");
+        return;
+    }
+
+    for (auto& device : devices)
+    {
+        if (device.get() == selectedDevice)
+            device->setMonitorMode (te::InputDevice::MonitorMode::on);
+        else
+            device->setMonitorMode (te::InputDevice::MonitorMode::automatic);
+
+        device->recordingEnabled = (device.get() == selectedDevice);
+    }
+
+    auto tracks = te::getAudioTracks (*edit);
+    if (tracks.isEmpty())
+        return;
+
+    // If the monitored track has no instrument, live MIDI can appear "silent".
+    // Ensure one exists for immediate play-through on fresh/empty tracks.
+    if (selectedTrackIndex >= 0 && selectedTrackIndex < tracks.size())
+    {
+        if (auto* selectedTrack = tracks.getUnchecked (selectedTrackIndex))
+        {
+            bool hasInstrument = false;
+            for (auto* plugin : selectedTrack->pluginList)
+            {
+                if (plugin != nullptr && isInstrumentPlugin (*plugin))
+                {
+                    hasInstrument = true;
+                    break;
+                }
+            }
+
+            if (! hasInstrument)
+                [[ maybe_unused ]] const bool inserted = insertDefaultInstrumentIfAvailable (selectedTrackIndex);
+        }
+    }
+
+    auto* instance = findMidiInputInstanceForSelectedDevice();
+    if (instance == nullptr)
+    {
+        logRecordDebug ("configureMidiInputRoutingForLivePlay: no input instance for selected device id=" + selectedMidiDeviceId);
+        return;
+    }
+
+    std::unordered_set<te::EditItemID> desiredTargets;
+    bool anyArmed = false;
+    for (int i = 0; i < tracks.size(); ++i)
+    {
+        if ((size_t) i < trackArmed.size() && trackArmed[(size_t) i])
+        {
+            desiredTargets.insert (tracks.getUnchecked (i)->itemID);
+            anyArmed = true;
+        }
+    }
+
+    if (! anyArmed && selectedTrackIndex >= 0 && selectedTrackIndex < tracks.size())
+        desiredTargets.insert (tracks.getUnchecked (selectedTrackIndex)->itemID);
+
+    auto existingTargets = instance->getTargets();
+    for (const auto& target : existingTargets)
+        if (desiredTargets.find (target) == desiredTargets.end())
+            [[ maybe_unused ]] auto removed = instance->removeTarget (target, nullptr);
+
+    for (const auto& target : desiredTargets)
+    {
+        [[ maybe_unused ]] auto result = instance->setTarget (target, true, nullptr);
+        instance->setRecordingEnabled (target, true);
+    }
+
+    edit->getTransport().ensureContextAllocated (true);
+    logRecordDebug ("configureMidiInputRoutingForLivePlay: device=" + selectedMidiDeviceId
+                    + ", targets=" + juce::String (desiredTargets.size())
+                    + ", armedAny=" + boolToText (anyArmed)
+                    + ", selectedTrack=" + juce::String (selectedTrackIndex));
+}
+
 bool SessionController::prepareMidiRecording()
 {
     if (edit == nullptr)
         return false;
 
     ensureTrackStateSize();
+    ensureMidiInputSelection();
     bool anyArmed = false;
     for (auto armed : trackArmed)
         anyArmed |= armed;
 
     if (! anyArmed)
     {
+        logRecordDebug ("prepareMidiRecording: failed - no armed tracks");
         engine.getUIBehaviour().showWarningMessage ("No tracks are armed for MIDI recording.");
         return false;
     }
@@ -1607,6 +2238,7 @@ bool SessionController::prepareMidiRecording()
     auto devices = engine.getDeviceManager().getMidiInDevices();
     if (devices.empty())
     {
+        logRecordDebug ("prepareMidiRecording: failed - no MIDI devices");
         engine.getUIBehaviour().showWarningMessage ("No MIDI input devices available.");
         return false;
     }
@@ -1614,59 +2246,294 @@ bool SessionController::prepareMidiRecording()
     if (selectedMidiDeviceId.isEmpty())
         selectedMidiDeviceId = devices.front()->getDeviceID();
 
+    te::MidiInputDevice* selectedDevice = nullptr;
     for (auto& device : devices)
     {
-        const bool enable = device->getDeviceID() == selectedMidiDeviceId;
-        device->setMonitorMode (te::InputDevice::MonitorMode::automatic);
-        device->setEnabled (enable);
+        if (device->getDeviceID() == selectedMidiDeviceId)
+        {
+            selectedDevice = device.get();
+            break;
+        }
     }
 
-    edit->getTransport().ensureContextAllocated();
+    if (selectedDevice == nullptr)
+    {
+        selectedDevice = devices.front().get();
+        selectedMidiDeviceId = selectedDevice->getDeviceID();
+    }
+
+    if (! selectedDevice->isEnabled())
+    {
+        selectedDevice->setEnabled (true);
+        devices = engine.getDeviceManager().getMidiInDevices();
+        selectedDevice = nullptr;
+
+        for (auto& device : devices)
+        {
+            if (device->getDeviceID() == selectedMidiDeviceId)
+            {
+                selectedDevice = device.get();
+                break;
+            }
+        }
+
+        if (selectedDevice == nullptr && ! devices.empty())
+        {
+            selectedDevice = devices.front().get();
+            selectedMidiDeviceId = selectedDevice->getDeviceID();
+        }
+    }
+
+
+    for (auto& device : devices)
+    {
+        if (device.get() == selectedDevice)
+            device->setMonitorMode (te::InputDevice::MonitorMode::on);
+        else
+            device->setMonitorMode (te::InputDevice::MonitorMode::automatic);
+
+        device->recordingEnabled = device.get() == selectedDevice;
+    }
+
+    edit->getTransport().ensureContextAllocated (true);
 
     auto tracks = te::getAudioTracks (*edit);
-    for (auto* instance : edit->getAllInputDevices())
+    auto* instance = findMidiInputInstanceForSelectedDevice();
+
+    if (instance == nullptr)
     {
-        auto& inputDevice = instance->getInputDevice();
-        if (inputDevice.getDeviceID() != selectedMidiDeviceId)
+        logRecordDebug ("prepareMidiRecording: failed - no instance for device id=" + selectedMidiDeviceId);
+        engine.getUIBehaviour().showWarningMessage ("Could not attach the selected MIDI input to this edit.");
+        return false;
+    }
+
+    std::unordered_set<te::EditItemID> armedTargets;
+    for (int i = 0; i < tracks.size(); ++i)
+        if (trackArmed[(size_t) i])
+            armedTargets.insert (tracks.getUnchecked (i)->itemID);
+
+    auto targets = instance->getTargets();
+    for (const auto& target : targets)
+        if (armedTargets.find (target) == armedTargets.end())
+            [[ maybe_unused ]] auto removed = instance->removeTarget (target, &edit->getUndoManager());
+
+    bool assigned = false;
+    juce::String lastTargetError;
+    for (int i = 0; i < tracks.size(); ++i)
+    {
+        if (! trackArmed[(size_t) i])
             continue;
 
-        auto targets = instance->getTargets();
-        for (const auto& target : targets)
+        if (auto* track = tracks.getUnchecked (i))
         {
-            bool keep = false;
-            for (int i = 0; i < tracks.size(); ++i)
+            auto targetResult = instance->setTarget (track->itemID, true, &edit->getUndoManager());
+            if (! targetResult)
             {
-                if (trackArmed[(size_t) i] && tracks.getUnchecked (i)->itemID == target)
-                {
-                    keep = true;
-                    break;
-                }
-            }
-
-            if (! keep)
-                [[ maybe_unused ]] auto removed = instance->removeTarget (target, &edit->getUndoManager());
-        }
-
-        for (int i = 0; i < tracks.size(); ++i)
-        {
-            if (! trackArmed[(size_t) i])
+                lastTargetError = targetResult.error();
                 continue;
-
-            if (auto* track = tracks.getUnchecked (i))
-            {
-                [[ maybe_unused ]] auto res = instance->setTarget (track->itemID, true, &edit->getUndoManager(), std::nullopt);
-                instance->setRecordingEnabled (track->itemID, true);
             }
+
+            instance->setRecordingEnabled (track->itemID, true);
+            assigned = true;
         }
     }
 
+    if (! assigned)
+    {
+        auto message = juce::String ("Could not arm any track targets for MIDI recording.");
+        if (lastTargetError.isNotEmpty())
+            message << "\n" << lastTargetError;
+        logRecordDebug ("prepareMidiRecording: failed - no targets assigned. lastError=" + lastTargetError);
+        engine.getUIBehaviour().showWarningMessage (message);
+        return false;
+    }
+
+    edit->getTransport().ensureContextAllocated (true);
     edit->restartPlayback();
+    logRecordDebug ("prepareMidiRecording: success. selectedDevice=" + selectedMidiDeviceId
+                    + ", armed={" + summariseTrackArmed (trackArmed) + "}");
     return true;
 }
 
 te::MidiNote* SessionController::findMidiNote (te::MidiClip& clip, const juce::ValueTree& noteState) const
 {
     return clip.getSequence().getNoteFor (noteState);
+}
+
+te::InputDeviceInstance* SessionController::findMidiInputInstanceForSelectedDevice() const
+{
+    if (edit == nullptr)
+        return nullptr;
+
+    for (auto* instance : edit->getAllInputDevices())
+    {
+        if (instance == nullptr)
+            continue;
+
+        auto& input = instance->getInputDevice();
+        if (input.getDeviceType() != te::InputDevice::physicalMidiDevice)
+            continue;
+
+        if (selectedMidiDeviceId.isEmpty() || input.getDeviceID() == selectedMidiDeviceId)
+            return instance;
+    }
+
+    logRecordDebug ("findMidiInputInstanceForSelectedDevice: no match for id=" + selectedMidiDeviceId);
+    return nullptr;
+}
+
+void SessionController::commitRecordingPreviewFallback (const std::unordered_map<uint64_t, RecordingPreviewState>& snapshot,
+                                                        const juce::Array<int>& midiClipCountsBefore,
+                                                        double stopTimeSeconds)
+{
+    if (edit == nullptr || snapshot.empty())
+        return;
+
+    auto tracks = te::getAudioTracks (*edit);
+    if (tracks.isEmpty())
+        return;
+
+    auto countMidiClipsOnTrack = [] (te::AudioTrack& track)
+    {
+        int midiClips = 0;
+        for (auto* clip : track.getClips())
+            if (dynamic_cast<te::MidiClip*> (clip) != nullptr)
+                ++midiClips;
+        return midiClips;
+    };
+
+    auto& undo = edit->getUndoManager();
+    bool addedAnyFallbackClips = false;
+
+    for (int trackIndex = 0; trackIndex < tracks.size(); ++trackIndex)
+    {
+        auto* track = tracks.getUnchecked (trackIndex);
+        if (track == nullptr)
+            continue;
+
+        const auto trackId = track->itemID.getRawID();
+        auto it = snapshot.find (trackId);
+        if (it == snapshot.end())
+            continue;
+
+        const int beforeCount = trackIndex < midiClipCountsBefore.size() ? midiClipCountsBefore[trackIndex] : 0;
+        const int afterCount = countMidiClipsOnTrack (*track);
+        if (afterCount > beforeCount)
+            continue; // Tracktion created a clip; don't duplicate.
+
+        auto notes = it->second.finishedNotes;
+        notes.reserve (notes.size() + it->second.activeNotes.size());
+        for (const auto& active : it->second.activeNotes)
+        {
+            NotePreview n;
+            n.startSeconds = active.second;
+            n.lengthSeconds = juce::jmax (0.01, stopTimeSeconds - active.second);
+            n.noteNumber = active.first;
+            notes.push_back (n);
+        }
+
+        if (notes.empty())
+            continue;
+
+        const double previewStart = juce::jmax (0.0, it->second.startSeconds);
+        const double fallbackStart = juce::jmax (0.0, lastRecordStartSeconds);
+        double minEventStart = std::numeric_limits<double>::max();
+        for (const auto& n : notes)
+            minEventStart = juce::jmin (minEventStart, n.startSeconds);
+        for (const auto& s : it->second.sustainEvents)
+            minEventStart = juce::jmin (minEventStart, s.timeSeconds);
+
+        if (! std::isfinite (minEventStart))
+            minEventStart = std::numeric_limits<double>::max();
+
+        const bool previewValid = std::isfinite (previewStart) && previewStart >= 0.0 && previewStart <= (stopTimeSeconds + 30.0);
+        const bool minEventValid = std::isfinite (minEventStart) && minEventStart >= 0.0 && minEventStart <= (stopTimeSeconds + 30.0);
+
+        // Preserve absolute record timing: choose a clip start close to where events actually happened.
+        double clipStart = 0.0;
+        if (previewValid && minEventValid)
+            clipStart = juce::jmin (previewStart, minEventStart);
+        else if (minEventValid)
+            clipStart = minEventStart;
+        else if (previewValid)
+            clipStart = previewStart;
+        else
+            clipStart = fallbackStart;
+
+        if (! std::isfinite (clipStart) || clipStart < 0.0)
+            clipStart = 0.0;
+
+        std::vector<NotePreview> absoluteNotes;
+        absoluteNotes.reserve (notes.size());
+        for (const auto& n : notes)
+        {
+            NotePreview nn = n;
+            nn.startSeconds = std::isfinite (nn.startSeconds) ? juce::jmax (0.0, nn.startSeconds) : clipStart;
+            nn.lengthSeconds = juce::jmax (0.01, nn.lengthSeconds);
+            absoluteNotes.push_back (nn);
+        }
+
+        double clipEnd = clipStart + 0.25;
+        for (const auto& n : absoluteNotes)
+            clipEnd = juce::jmax (clipEnd, n.startSeconds + n.lengthSeconds);
+        for (const auto& s : it->second.sustainEvents)
+        {
+            const double st = std::isfinite (s.timeSeconds) ? juce::jmax (0.0, s.timeSeconds) : clipStart;
+            clipEnd = juce::jmax (clipEnd, st + 0.01);
+        }
+
+        if (clipEnd <= clipStart)
+            clipEnd = clipStart + 0.25;
+
+        // Guard against pathological timestamps producing invisible/off-world clips.
+        const double maxReasonableEnd = juce::jmax (clipStart + 0.25, stopTimeSeconds + 8.0);
+        if (! std::isfinite (clipEnd) || clipEnd > maxReasonableEnd)
+            clipEnd = maxReasonableEnd;
+
+        undo.beginNewTransaction ("Commit MIDI Recording Fallback");
+        auto clip = track->insertMIDIClip ("Recorded MIDI",
+                                           { te::TimePosition::fromSeconds (clipStart),
+                                             te::TimeDuration::fromSeconds (clipEnd - clipStart) },
+                                           nullptr);
+        if (clip == nullptr)
+            continue;
+
+        const auto clipStartBeat = te::toBeats (te::TimePosition::fromSeconds (clipStart), edit->tempoSequence);
+        auto& seq = clip->getSequence();
+
+        for (const auto& n : absoluteNotes)
+        {
+            const auto noteStartBeatAbs = te::toBeats (te::TimePosition::fromSeconds (n.startSeconds), edit->tempoSequence);
+            const auto noteEndBeatAbs = te::toBeats (te::TimePosition::fromSeconds (n.startSeconds + juce::jmax (0.01, n.lengthSeconds)),
+                                                     edit->tempoSequence);
+            const auto relStart = te::BeatPosition::fromBeats (juce::jmax (0.0, (noteStartBeatAbs - clipStartBeat).inBeats()));
+            const auto len = te::BeatDuration::fromBeats (juce::jmax (0.001, (noteEndBeatAbs - noteStartBeatAbs).inBeats()));
+            seq.addNote (n.noteNumber, relStart, len, 100, 0, &undo);
+        }
+
+        for (const auto& s : it->second.sustainEvents)
+        {
+            const double sustainTime = std::isfinite (s.timeSeconds) ? juce::jmax (0.0, s.timeSeconds) : clipStart;
+            const auto sustainBeatAbs = te::toBeats (te::TimePosition::fromSeconds (sustainTime), edit->tempoSequence);
+            const auto relBeat = te::BeatPosition::fromBeats (juce::jmax (0.0, (sustainBeatAbs - clipStartBeat).inBeats()));
+            const int ccValue = juce::jlimit (0, 127, s.value) << 7;
+            seq.addControllerEvent (relBeat, 64, ccValue, &undo);
+        }
+
+        clip->setMidiChannel (te::MidiChannel (1));
+        addedAnyFallbackClips = true;
+        cursorTimeSeconds = clipStart;
+        logRecordDebug ("fallback committed MIDI clip on track " + juce::String (trackIndex)
+                        + " with notes=" + juce::String ((int) absoluteNotes.size())
+                        + ", sustainEvents=" + juce::String ((int) it->second.sustainEvents.size())
+                        + ", previewStart=" + juce::String (previewStart, 3)
+                        + ", requestedStart=" + juce::String (fallbackStart, 3)
+                        + ", clipStart=" + juce::String (clipStart, 3)
+                        + ", clipEnd=" + juce::String (clipEnd, 3));
+    }
+
+    if (addedAnyFallbackClips)
+        te::EditFileOperations (*edit).save (true, true, false);
 }
 
 te::Plugin::Ptr SessionController::duplicateInstrumentPlugin (te::AudioTrack& destination,
@@ -1696,5 +2563,9 @@ te::Plugin::Ptr SessionController::duplicateInstrumentPlugin (te::AudioTrack& de
     const int insertIndex = getInsertIndexBeforeVolume (destination);
     destination.pluginList.insertPlugin (plugin, insertIndex, nullptr);
     plugin->setEnabled (sourceInstrument->isEnabled());
+
+    auto label = source.state.getProperty (kInstrumentLabelId).toString().trim();
+    if (! label.isEmpty())
+        destination.state.setProperty (kInstrumentLabelId, label, nullptr);
     return plugin;
 }

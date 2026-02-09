@@ -34,6 +34,22 @@ void TimelineComponent::setSession (SessionController* newSession)
     session = newSession;
 }
 
+void TimelineComponent::setSelectedClipId (uint64_t newId)
+{
+    selectedClipId = newId;
+    selectedClipIds.clear();
+    if (newId != 0)
+        selectedClipIds.insert (newId);
+    repaint();
+}
+
+void TimelineComponent::clearSelection() noexcept
+{
+    selectedClipId = 0;
+    selectedClipIds.clear();
+    repaint();
+}
+
 void TimelineComponent::setRowHeight (int height)
 {
     rowHeight = height;
@@ -168,27 +184,81 @@ void TimelineComponent::mouseDown (const juce::MouseEvent& event)
     }
 
     auto clipRects = buildClipRects();
-    selectedClipId = 0;
     draggingClipId = 0;
     dragOffsetSeconds = 0.0;
     dragSourceTrackIndex = -1;
     dragTargetTrackIndex = -1;
+    dragTrackDelta = 0;
+    dragOriginalClipStarts.clear();
+    dragOriginalClipTracks.clear();
+    isResizingClip = false;
+    activeResizeEdge = ResizeEdge::none;
+    resizePreviewLengthSeconds = 0.0;
+    resizePreviewStartSeconds = 0.0;
+    clipOriginalLengthSeconds = 0.0;
 
-    for (const auto& clipRect : clipRects)
+    const bool additiveSelect = event.mods.isShiftDown() || event.mods.isCommandDown();
+    const auto* hitClipRect = findClipRectAt (event.getPosition(), clipRects);
+    if (hitClipRect != nullptr)
     {
-        if (clipRect.bounds.contains (event.getPosition()))
+        const uint64_t hitId = hitClipRect->info.id;
+        const bool wasAlreadySelected = selectedClipIds.find (hitId) != selectedClipIds.end();
+
+        if (additiveSelect)
         {
-            selectedClipId = clipRect.info.id;
-            draggingClipId = clipRect.info.id;
-            dragStartSeconds = viewStartSeconds + event.position.x / pixelsPerSecond;
-            clipOriginalStartSeconds = clipRect.info.startSeconds;
-            dragSourceTrackIndex = clipRect.info.trackIndex;
-            dragTargetTrackIndex = clipRect.info.trackIndex;
-            session->setSelectedTrack (clipRect.info.trackIndex);
-            if (onTrackSelected)
-                onTrackSelected (clipRect.info.trackIndex);
-            break;
+            if (wasAlreadySelected)
+                selectedClipIds.erase (hitId);
+            else
+                selectedClipIds.insert (hitId);
+
+            if (selectedClipIds.empty())
+                selectedClipId = 0;
+            else
+                selectedClipId = hitId;
         }
+        else
+        {
+            if (! wasAlreadySelected)
+            {
+                selectedClipIds.clear();
+                selectedClipIds.insert (hitId);
+            }
+            selectedClipId = hitId;
+        }
+
+        session->setSelectedTrack (hitClipRect->info.trackIndex);
+        if (onTrackSelected)
+            onTrackSelected (hitClipRect->info.trackIndex);
+
+        if (! additiveSelect)
+        {
+            draggingClipId = hitId;
+            dragStartSeconds = viewStartSeconds + event.position.x / pixelsPerSecond;
+            clipOriginalStartSeconds = hitClipRect->info.startSeconds;
+            clipOriginalLengthSeconds = hitClipRect->info.lengthSeconds;
+            resizePreviewStartSeconds = clipOriginalStartSeconds;
+            resizePreviewLengthSeconds = clipOriginalLengthSeconds;
+            dragSourceTrackIndex = hitClipRect->info.trackIndex;
+            dragTargetTrackIndex = hitClipRect->info.trackIndex;
+            activeResizeEdge = (hitClipRect->info.type == SessionController::ClipType::midi)
+                ? getClipResizeEdgeAt (*hitClipRect, event.getPosition())
+                : ResizeEdge::none;
+            isResizingClip = activeResizeEdge != ResizeEdge::none;
+
+            for (const auto& clip : clipRects)
+            {
+                if (selectedClipIds.find (clip.info.id) != selectedClipIds.end())
+                {
+                    dragOriginalClipStarts[clip.info.id] = clip.info.startSeconds;
+                    dragOriginalClipTracks[clip.info.id] = clip.info.trackIndex;
+                }
+            }
+        }
+    }
+    else if (! additiveSelect)
+    {
+        selectedClipId = 0;
+        selectedClipIds.clear();
     }
 
     const double clickTime = viewStartSeconds + event.position.x / pixelsPerSecond;
@@ -214,9 +284,34 @@ void TimelineComponent::mouseDrag (const juce::MouseEvent& event)
         return;
 
     const double currentTime = viewStartSeconds + event.position.x / pixelsPerSecond;
-    double newStart = clipOriginalStartSeconds + (currentTime - dragStartSeconds);
-    newStart = juce::jmax (0.0, newStart);
-    dragOffsetSeconds = newStart - clipOriginalStartSeconds;
+    if (isResizingClip)
+    {
+        constexpr double minClipLength = 0.01;
+
+        if (activeResizeEdge == ResizeEdge::right)
+        {
+            resizePreviewStartSeconds = clipOriginalStartSeconds;
+            resizePreviewLengthSeconds = juce::jmax (minClipLength, currentTime - clipOriginalStartSeconds);
+        }
+        else if (activeResizeEdge == ResizeEdge::left)
+        {
+            const double originalEnd = clipOriginalStartSeconds + clipOriginalLengthSeconds;
+            const double maxLeft = originalEnd - minClipLength;
+            const double clampedStart = juce::jlimit (0.0, maxLeft, currentTime);
+            resizePreviewStartSeconds = clampedStart;
+            resizePreviewLengthSeconds = juce::jmax (minClipLength, originalEnd - clampedStart);
+        }
+
+        repaint();
+        return;
+    }
+
+    dragOffsetSeconds = currentTime - dragStartSeconds;
+    double minStart = clipOriginalStartSeconds;
+    for (const auto& [_, start] : dragOriginalClipStarts)
+        minStart = juce::jmin (minStart, start);
+    if (minStart + dragOffsetSeconds < 0.0)
+        dragOffsetSeconds = -minStart;
 
     const int edgeMargin = 24;
     if (event.position.x < edgeMargin)
@@ -226,7 +321,10 @@ void TimelineComponent::mouseDrag (const juce::MouseEvent& event)
 
     const int hoverTrack = getTrackIndexAtY ((int) event.position.y);
     if (hoverTrack >= 0)
+    {
         dragTargetTrackIndex = hoverTrack;
+        dragTrackDelta = hoverTrack - dragSourceTrackIndex;
+    }
 
     repaint();
 }
@@ -236,17 +334,51 @@ void TimelineComponent::mouseUp (const juce::MouseEvent&)
     if (session == nullptr || draggingClipId == 0)
         return;
 
-    const double newStart = clipOriginalStartSeconds + dragOffsetSeconds;
-    if (dragTargetTrackIndex >= 0 && dragTargetTrackIndex != dragSourceTrackIndex)
-        session->moveClipToTrack (draggingClipId, dragTargetTrackIndex, newStart);
+    if (isResizingClip)
+    {
+        session->resizeClipRange (draggingClipId, resizePreviewStartSeconds, resizePreviewLengthSeconds);
+    }
     else
-        session->moveClip (draggingClipId, newStart);
+    {
+        const int trackCount = juce::jmax (0, session->getTrackCount());
+        for (const auto& [clipId, originalStart] : dragOriginalClipStarts)
+        {
+            const double newStart = juce::jmax (0.0, originalStart + dragOffsetSeconds);
+            const int originalTrack = dragOriginalClipTracks.count (clipId) != 0 ? dragOriginalClipTracks[clipId] : dragSourceTrackIndex;
+            int targetTrack = originalTrack;
+            targetTrack = juce::jlimit (0, juce::jmax (0, trackCount - 1), targetTrack + dragTrackDelta);
+
+            const bool movedTrack = dragTrackDelta != 0 && targetTrack != originalTrack;
+            if (movedTrack)
+                session->moveClipToTrack (clipId, targetTrack, newStart);
+            else
+                session->moveClip (clipId, newStart);
+        }
+    }
 
     draggingClipId = 0;
     dragOffsetSeconds = 0.0;
     dragSourceTrackIndex = -1;
     dragTargetTrackIndex = -1;
+    dragTrackDelta = 0;
+    dragOriginalClipStarts.clear();
+    dragOriginalClipTracks.clear();
+    isResizingClip = false;
+    activeResizeEdge = ResizeEdge::none;
+    resizePreviewStartSeconds = 0.0;
+    resizePreviewLengthSeconds = 0.0;
+    clipOriginalLengthSeconds = 0.0;
     repaint();
+}
+
+void TimelineComponent::mouseMove (const juce::MouseEvent& event)
+{
+    updateMouseCursorForPosition (event.getPosition());
+}
+
+void TimelineComponent::mouseExit (const juce::MouseEvent&)
+{
+    setMouseCursor (juce::MouseCursor::NormalCursor);
 }
 
 void TimelineComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& details)
@@ -339,19 +471,36 @@ std::vector<TimelineComponent::ClipRect> TimelineComponent::buildClipRects() con
         auto clips = session->getClipsForTrack (trackIndex);
         for (const auto& clip : clips)
         {
-            const int drawTrackIndex = (clip.id == draggingClipId && dragTargetTrackIndex >= 0)
-                ? dragTargetTrackIndex
-                : trackIndex;
+            int drawTrackIndex = trackIndex;
+            if (draggingClipId != 0 && ! isResizingClip)
+            {
+                auto itTrack = dragOriginalClipTracks.find (clip.id);
+                if (itTrack != dragOriginalClipTracks.end())
+                {
+                    const int maxTrack = juce::jmax (0, session->getTrackCount() - 1);
+                    drawTrackIndex = juce::jlimit (0, maxTrack, itTrack->second + dragTrackDelta);
+                }
+            }
 
             const int y = rulerHeight + markerLaneHeight + drawTrackIndex * rowHeight + 8 - scrollOffset;
             const int height = rowHeight - 16;
 
-            const double startSeconds = (draggingClipId == clip.id)
-                ? clip.startSeconds + dragOffsetSeconds
-                : clip.startSeconds;
+            double startSeconds = clip.startSeconds;
+            if (draggingClipId != 0 && ! isResizingClip)
+            {
+                auto itStart = dragOriginalClipStarts.find (clip.id);
+                if (itStart != dragOriginalClipStarts.end())
+                    startSeconds = juce::jmax (0.0, itStart->second + dragOffsetSeconds);
+            }
+
+            if (isResizingClip && clip.id == draggingClipId)
+                startSeconds = resizePreviewStartSeconds;
 
             const int x = (int) ((startSeconds - viewStartSeconds) * pixelsPerSecond);
-            const int w = (int) juce::jmax (1.0, clip.lengthSeconds * pixelsPerSecond);
+            const double displayLength = (isResizingClip && clip.id == draggingClipId)
+                ? resizePreviewLengthSeconds
+                : clip.lengthSeconds;
+            const int w = (int) juce::jmax (1.0, displayLength * pixelsPerSecond);
 
             ClipRect rect;
             rect.info = clip;
@@ -581,34 +730,52 @@ void TimelineComponent::drawRuler (juce::Graphics& g, juce::Rectangle<int> area)
                                              bottom, 0.0f, (float) area.getBottom(), false));
     g.fillRect (area);
 
-    const double maxSeconds = area.getWidth() / pixelsPerSecond;
-    double step = 0.25;
-    while (step * pixelsPerSecond < 8.0)
-        step *= 2.0;
+    if (session == nullptr)
+        return;
 
-    double labelSpacing = 70.0;
+    auto& tempoSeq = session->getEdit().tempoSequence;
+    const double visibleSeconds = area.getWidth() / pixelsPerSecond;
+    const double startSeconds = viewStartSeconds;
+    const double endSeconds = viewStartSeconds + visibleSeconds;
+
+    const auto& timeSig = tempoSeq.getTimeSigAt (te::TimePosition::fromSeconds (startSeconds));
+    const int numerator = juce::jmax (1, timeSig.numerator.get());
+    const auto startBarsBeats = tempoSeq.toBarsAndBeats (te::TimePosition::fromSeconds (startSeconds));
+    int barIndex = juce::jmax (0, startBarsBeats.bars);
+
+    double labelSpacing = 56.0;
     double lastLabelX = -1e9;
 
-    for (double t = std::floor (viewStartSeconds / step) * step;
-         t <= viewStartSeconds + maxSeconds + 0.0001;
-         t += step)
+    for (;; ++barIndex)
     {
-        const int x = (int) ((t - viewStartSeconds) * pixelsPerSecond);
-        const bool isMajor = std::fmod (t, 1.0) < 0.0001;
-        const bool isMedium = ! isMajor && (std::fmod (t, 0.5) < 0.0001);
-
-        const int tickHeight = isMajor ? 16 : (isMedium ? 10 : 6);
-        const float alpha = isMajor ? 0.7f : (isMedium ? 0.5f : 0.3f);
-
-        g.setColour (juce::Colours::white.withAlpha (alpha));
-        g.drawLine ((float) x, (float) area.getBottom(), (float) x, (float) (area.getBottom() - tickHeight));
-
-        if (isMajor && (x - lastLabelX) > labelSpacing)
+        for (int beat = 0; beat < numerator; ++beat)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.85f));
-            g.drawText (juce::String (t, 0) + "s", x + 4, area.getY(), 40, area.getHeight(),
-                        juce::Justification::centredLeft);
-            lastLabelX = (double) x;
+            const double beatPosition = (double) barIndex * (double) numerator + (double) beat;
+            const auto beatPos = te::BeatPosition::fromBeats (beatPosition);
+            const double time = tempoSeq.toTime (beatPos).inSeconds();
+
+            if (time > endSeconds + 0.01)
+                return;
+
+            if (time < startSeconds - 0.01)
+                continue;
+
+            const int x = (int) ((time - viewStartSeconds) * pixelsPerSecond);
+            const bool isBar = (beat == 0);
+            const bool isBeat = ! isBar;
+            const int tickHeight = isBar ? 16 : 8;
+            const float alpha = isBar ? 0.75f : (isBeat ? 0.45f : 0.3f);
+
+            g.setColour (juce::Colours::white.withAlpha (alpha));
+            g.drawLine ((float) x, (float) area.getBottom(), (float) x, (float) (area.getBottom() - tickHeight));
+
+            if (isBar && (x - lastLabelX) > labelSpacing)
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.9f));
+                g.drawText ("Bar " + juce::String (barIndex + 1), x + 4, area.getY(), 72, area.getHeight(),
+                            juce::Justification::centredLeft);
+                lastLabelX = (double) x;
+            }
         }
     }
 }
@@ -746,7 +913,13 @@ void TimelineComponent::drawClip (juce::Graphics& g, const ClipRect& clipRect) c
         const int maxNotesToDraw = 200;
         int noteCount = 0;
 
-        const double noteOffset = (draggingClipId == clip.id) ? dragOffsetSeconds : 0.0;
+            double noteOffset = 0.0;
+            if (draggingClipId != 0 && ! isResizingClip)
+            {
+                auto itStart = dragOriginalClipStarts.find (clip.id);
+                if (itStart != dragOriginalClipStarts.end())
+                    noteOffset = dragOffsetSeconds;
+            }
         for (const auto& note : clip.notes)
         {
             if (noteCount++ > maxNotesToDraw)
@@ -778,4 +951,58 @@ void TimelineComponent::drawClip (juce::Graphics& g, const ClipRect& clipRect) c
         g.setColour (juce::Colours::yellow.withAlpha (0.9f));
         g.drawRoundedRectangle (bounds.toFloat(), 4.0f, 2.0f);
     }
+    else if (selectedClipIds.find (clip.id) != selectedClipIds.end())
+    {
+        g.setColour (juce::Colours::yellow.withAlpha (0.6f));
+        g.drawRoundedRectangle (bounds.toFloat(), 4.0f, 1.5f);
+    }
+
+    if (clip.type == SessionController::ClipType::midi)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.75f));
+        const int leftHandleX = bounds.getX() + 3;
+        g.drawLine ((float) leftHandleX, (float) bounds.getY() + 5.0f, (float) leftHandleX, (float) bounds.getBottom() - 5.0f, 1.5f);
+        const int handleX = bounds.getRight() - 4;
+        g.drawLine ((float) handleX, (float) bounds.getY() + 5.0f, (float) handleX, (float) bounds.getBottom() - 5.0f, 1.5f);
+    }
+}
+
+const TimelineComponent::ClipRect* TimelineComponent::findClipRectAt (juce::Point<int> position,
+                                                                       std::vector<ClipRect>& clipRects) const
+{
+    for (auto it = clipRects.rbegin(); it != clipRects.rend(); ++it)
+        if (it->bounds.contains (position))
+            return &(*it);
+    return nullptr;
+}
+
+TimelineComponent::ResizeEdge TimelineComponent::getClipResizeEdgeAt (const ClipRect& clipRect,
+                                                                       juce::Point<int> position) const
+{
+    const auto leftEdgeBounds = clipRect.bounds.withWidth (resizeHoverEdgeMarginPx * 2);
+    if (leftEdgeBounds.contains (position))
+        return ResizeEdge::left;
+
+    const auto rightEdgeBounds = clipRect.bounds.withX (clipRect.bounds.getRight() - resizeHoverEdgeMarginPx)
+        .withWidth (resizeHoverEdgeMarginPx * 2);
+    if (rightEdgeBounds.contains (position))
+        return ResizeEdge::right;
+
+    return ResizeEdge::none;
+}
+
+void TimelineComponent::updateMouseCursorForPosition (juce::Point<int> position)
+{
+    auto clipRects = buildClipRects();
+    if (const auto* clipRect = findClipRectAt (position, clipRects))
+    {
+        if (clipRect->info.type == SessionController::ClipType::midi
+            && getClipResizeEdgeAt (*clipRect, position) != ResizeEdge::none)
+        {
+            setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+            return;
+        }
+    }
+
+    setMouseCursor (juce::MouseCursor::NormalCursor);
 }

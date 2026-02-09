@@ -46,11 +46,13 @@ private:
     void timerCallback() override;
     void scrollBarMoved (juce::ScrollBar* scrollBarThatHasMoved, double newRangeStart) override;
     void updateTimeDisplay();
+    void showFileMenu();
     void showImportMenu();
     void beginImport (ImportType type);
     void showProjectMenu();
     void beginProjectAction (ProjectAction action);
     void showPluginsWindow();
+    void showSettingsMenu();
     void showMidiInputMenu();
     void showInstrumentMenu (int trackIndex);
     void showFxMenu (int trackIndex);
@@ -88,6 +90,8 @@ private:
     int inspectorWidth = 280;
     bool isGeneratingChords = false;
     uint64_t clipClipboardId = 0;
+    int instrumentRefreshCounter = 0;
+    juce::String lastKnownMidiInputName;
 
     std::shared_ptr<juce::FileChooser> fileChooser;
     std::shared_ptr<juce::FileChooser> projectChooser;

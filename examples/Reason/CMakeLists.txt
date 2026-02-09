@@ -38,7 +38,9 @@ endif()
 
 #juce_add_pip (${TARGET_NAME}.h)
 juce_add_gui_app(${TARGET_NAME}
-    BUNDLE_ID "com.takakhoo.reason"
+    PRODUCT_NAME "Modulo"
+    BUNDLE_ID "com.takakhoo.modulo"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Modulo_AppIcon_1024.png"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "Audio recording"
     REQUIRES_FULL_SCREEN TRUE
@@ -58,7 +60,8 @@ target_compile_features(${TARGET_NAME} PRIVATE cxx_std_20)
 
 set_target_properties(${TARGET_NAME} PROPERTIES
     C_VISIBILITY_PRESET hidden
-    CXX_VISIBILITY_PRESET hidden)
+    CXX_VISIBILITY_PRESET hidden
+    MACOSX_BUNDLE_BUNDLE_NAME "Modulo")
 
 set(SourceFiles
     ${TARGET_NAME}.h

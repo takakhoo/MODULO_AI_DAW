@@ -2,7 +2,8 @@
 
 #include <JuceHeader.h>
 
-class TransportBarComponent : public juce::Component
+class TransportBarComponent : public juce::Component,
+                              private juce::Timer
 {
 public:
     TransportBarComponent();
@@ -10,12 +11,11 @@ public:
     std::function<void()> onPlay;
     std::function<void()> onStop;
     std::function<void()> onRecord;
-    std::function<void()> onImport;
-    std::function<void()> onProject;
-    std::function<void()> onPlugins;
+    std::function<void()> onFileMenu;
     std::function<void()> onGenerateChords;
     std::function<void()> onMidiInput;
     std::function<void()> onSettings;
+    std::function<void (bool)> onMetronomeChanged;
     std::function<void (const juce::String&)> onTempoChanged;
     std::function<void (const juce::String&)> onTimeSignatureChanged;
     std::function<void (const juce::String&)> onKeySignatureChanged;
@@ -27,18 +27,26 @@ public:
     void setKeySignatureText (const juce::String& text);
     void setRecordActive (bool shouldShowActive);
     void setMidiInputText (const juce::String& text);
+    void setMetronomeActive (bool shouldShowActive);
 
     void paint (juce::Graphics& g) override;
     void resized() override;
+    void mouseDoubleClick (const juce::MouseEvent& event) override;
 
 private:
-    juce::TextButton playButton { "Play" };
-    juce::TextButton stopButton { "Stop" };
-    juce::TextButton recordButton { "Record" };
-    juce::TextButton projectButton { "Project" };
-    juce::TextButton importButton { "Import..." };
-    juce::TextButton pluginsButton { "Plugins" };
-    juce::TextButton chordsButton { "Chords x5" };
+    void timerCallback() override;
+    void showKeySignatureMenu();
+    void styleActionButton (juce::TextButton& button, juce::Colour baseColour);
+
+    juce::ShapeButton playButton { "Play", juce::Colours::transparentBlack,
+                                   juce::Colours::transparentBlack, juce::Colours::transparentBlack };
+    juce::ShapeButton stopButton { "Stop", juce::Colours::transparentBlack,
+                                   juce::Colours::transparentBlack, juce::Colours::transparentBlack };
+    juce::ShapeButton recordButton { "Record", juce::Colours::transparentBlack,
+                                     juce::Colours::transparentBlack, juce::Colours::transparentBlack };
+    juce::TextButton fileButton { "File" };
+    juce::TextButton chordsButton { "Generate Chords" };
+    juce::TextButton metronomeButton { "Metronome" };
     juce::TextButton midiInputButton { "MIDI In" };
     juce::TextButton settingsButton { "Settings" };
 
@@ -47,4 +55,8 @@ private:
     juce::Label tempoLabel { {}, "Tempo: --" };
     juce::Label timeSigLabel { {}, "4/4" };
     juce::Label keyLabel { {}, "Cmaj" };
+
+    bool recordActive = false;
+    bool recordBlinkOn = false;
+    juce::Rectangle<int> displayPanelBounds;
 };
