@@ -4,6 +4,16 @@ MODULO (Musician-Owned DAW User-Led Orchestration) is a standalone DAW built on 
 
 This repository contains the code needed to build and run MODULO, including the custom DAW app and integrated ReaLchords-based generation flow.
 
+## Why the Name "Modulo"
+
+`Modulo` is not only an acronym. In computation, the modulo (`%`) operator returns the remainder after division. The remainder metaphor is central to this project:
+
+- Most Music AI systems optimize toward a single "best" continuation.
+- MODULO instead exposes the "remainder" of plausible harmonic futures.
+- By generating multiple chord alternatives for the same melody, it helps the musician navigate the residual solution space that one-shot generation usually hides.
+
+In short, MODULO is designed to return what deterministic generation leaves on the table.
+
 ## What MODULO Does
 
 - Timeline-based DAW editing with audio + MIDI tracks.
@@ -16,7 +26,7 @@ This repository contains the code needed to build and run MODULO, including the 
 
 ## Novelty and Thesis Focus
 
-The core novelty is the harmony-assistance workflow:
+The core novelty is the harmony-assistance workflow and its framing in Music AI:
 
 - Melody-conditioned chord generation using a ReaLchords model path.
 - Fast generation of multiple chord alternatives for one melody phrase.
@@ -24,6 +34,14 @@ The core novelty is the harmony-assistance workflow:
 - Human-in-the-loop compositional exploration of harmonic possibilities.
 
 This focuses on expanding the creative "space of possibilities" for harmony rather than producing a single deterministic accompaniment.
+
+### Why this matters for Music AI
+
+- **From answer-machine to co-creator:** The model proposes options; the artist steers.
+- **Supports real compositional thinking:** Harmony writing is branching and comparative, not linear.
+- **Improves controllability:** Users can audition alternatives in context rather than regenerate blindly.
+- **Bridges research and production:** The same workflow runs inside a working DAW, not only a notebook/demo.
+- **Encourages stylistic diversity:** Multi-option outputs reduce convergence toward a single generic result.
 
 ## Architecture Overview
 
