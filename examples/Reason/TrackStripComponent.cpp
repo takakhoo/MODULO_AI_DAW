@@ -10,16 +10,50 @@ static juce::Colour volumeColourFor (float value)
     return juce::Colour::fromHSV (hue, sat, bright, 1.0f);
 }
 
+constexpr float kMinTrackDb = -10.0f;
+constexpr float kMaxTrackDb = 6.0f;
+
+static float normalizedToDb (float normalizedValue)
+{
+    const float norm = juce::jlimit (0.0f, 1.0f, normalizedValue);
+    return kMinTrackDb + (kMaxTrackDb - kMinTrackDb) * norm;
+}
+
+static juce::String formatDb (float db)
+{
+    return juce::String (db, 1) + " dB";
+}
+
+static bool isPlaceholderInstrumentLabel (const juce::String& name)
+{
+    auto trimmed = name.trim();
+    if (trimmed.isEmpty())
+        return true;
+
+    const auto lower = trimmed.toLowerCase();
+    if (lower.contains ("untitled"))
+        return true;
+    if (lower == "default" || lower.startsWith ("default"))
+        return true;
+    if (lower == "init" || lower.startsWith ("init"))
+        return true;
+    if (lower == "program" || lower.startsWith ("program"))
+        return true;
+
+    return false;
+}
+
 TrackStripComponent::TrackStripComponent (int index)
     : trackIndex (index)
 {
     addAndMakeVisible (nameLabel);
     addAndMakeVisible (volumeSlider);
+    addAndMakeVisible (gainLabel);
+    addAndMakeVisible (gainValueLabel);
     addAndMakeVisible (instrumentButton);
     addAndMakeVisible (fxButton);
     addAndMakeVisible (muteButton);
     addAndMakeVisible (soloButton);
-    addAndMakeVisible (aiButton);
 
     addAndMakeVisible (numberLabel);
     numberLabel.setJustificationType (juce::Justification::centred);
@@ -44,13 +78,25 @@ TrackStripComponent::TrackStripComponent (int index)
     volumeSlider.setColour (juce::Slider::trackColourId, volumeColourFor (0.8f));
     volumeSlider.setColour (juce::Slider::backgroundColourId, juce::Colour (0xFF20252C));
     volumeSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFBFEDE4));
+    volumeSlider.setLookAndFeel (&gainSliderLaf);
     volumeSlider.onValueChange = [this]
     {
         if (onVolumeChanged)
             onVolumeChanged (trackIndex, (float) volumeSlider.getValue());
         volumeSlider.setColour (juce::Slider::trackColourId, volumeColourFor ((float) volumeSlider.getValue()));
+        updateGainReadout ((float) volumeSlider.getValue());
         repaint();
     };
+
+    gainLabel.setText ("Gain", juce::dontSendNotification);
+    gainLabel.setJustificationType (juce::Justification::centredLeft);
+    gainLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.75f));
+    gainLabel.setFont (juce::FontOptions (11.0f, juce::Font::plain));
+
+    gainValueLabel.setJustificationType (juce::Justification::centredRight);
+    gainValueLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    gainValueLabel.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    updateGainReadout ((float) volumeSlider.getValue());
 
     instrumentButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF27313C));
     instrumentButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
@@ -93,9 +139,46 @@ TrackStripComponent::TrackStripComponent (int index)
         if (onSoloChanged)
             onSoloChanged (trackIndex, soloButton.getToggleState());
     };
+}
 
-    aiButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF2A2F3A));
-    aiButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+TrackStripComponent::~TrackStripComponent()
+{
+    volumeSlider.setLookAndFeel (nullptr);
+}
+
+void TrackStripComponent::GainSliderLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
+                                                                   float sliderPos, float minSliderPos, float maxSliderPos,
+                                                                   const juce::Slider::SliderStyle style, juce::Slider& slider)
+{
+    juce::ignoreUnused (minSliderPos, maxSliderPos);
+    if (style != juce::Slider::LinearHorizontal && style != juce::Slider::LinearBar)
+    {
+        juce::LookAndFeel_V4::drawLinearSlider (g, x, y, width, height, sliderPos,
+                                                minSliderPos, maxSliderPos, style, slider);
+        return;
+    }
+
+    const float trackHeight = juce::jlimit (6.0f, 12.0f, height * 0.6f);
+    const float trackY = (float) y + ((float) height - trackHeight) * 0.5f;
+    const auto track = juce::Rectangle<float> ((float) x, trackY, (float) width, trackHeight);
+
+    g.setColour (slider.findColour (juce::Slider::backgroundColourId));
+    g.fillRoundedRectangle (track, trackHeight * 0.5f);
+
+    const float fillWidth = juce::jlimit (0.0f, (float) width, sliderPos - (float) x);
+    if (fillWidth > 0.0f)
+    {
+        auto fill = track.withWidth (fillWidth);
+        g.setColour (slider.findColour (juce::Slider::trackColourId));
+        g.fillRoundedRectangle (fill, trackHeight * 0.5f);
+    }
+
+    const float thumbRadius = trackHeight * 0.65f;
+    g.setColour (slider.findColour (juce::Slider::thumbColourId));
+    g.fillEllipse (sliderPos - thumbRadius,
+                   track.getCentreY() - thumbRadius,
+                   thumbRadius * 2.0f,
+                   thumbRadius * 2.0f);
 }
 
 void TrackStripComponent::setTrackName (const juce::String& name)
@@ -105,7 +188,7 @@ void TrackStripComponent::setTrackName (const juce::String& name)
 
 void TrackStripComponent::setInstrumentName (const juce::String& name)
 {
-    auto label = name.isNotEmpty() ? name : "Instrument";
+    auto label = isPlaceholderInstrumentLabel (name) ? "Instrument" : name;
     instrumentButton.setButtonText (label);
     instrumentButton.setTooltip (label);
 }
@@ -127,6 +210,7 @@ void TrackStripComponent::setVolumeNormalized (float value)
 {
     volumeSlider.setValue (juce::jlimit (0.0f, 1.0f, value), juce::dontSendNotification);
     volumeSlider.setColour (juce::Slider::trackColourId, volumeColourFor (value));
+    updateGainReadout (value);
 }
 
 void TrackStripComponent::setEffectCount (int count)
@@ -147,19 +231,21 @@ void TrackStripComponent::setEffectCount (int count)
 void TrackStripComponent::setMuted (bool shouldMute)
 {
     muteButton.setToggleState (shouldMute, juce::dontSendNotification);
-    const auto colour = shouldMute ? juce::Colour (0xFF1D6C67) : juce::Colour (0xFF2A2F3A);
+    const auto baseColour = juce::Colour (0xFF6EC7FF);
+    const auto colour = shouldMute ? baseColour : baseColour.withMultipliedBrightness (0.55f);
     muteButton.setColour (juce::TextButton::buttonColourId, colour);
-    muteButton.setColour (juce::TextButton::textColourOnId, shouldMute ? juce::Colours::black : juce::Colours::white);
-    muteButton.setColour (juce::TextButton::textColourOffId, shouldMute ? juce::Colours::black : juce::Colours::white);
+    muteButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+    muteButton.setColour (juce::TextButton::textColourOffId, juce::Colours::black);
 }
 
 void TrackStripComponent::setSolo (bool shouldSolo)
 {
     soloButton.setToggleState (shouldSolo, juce::dontSendNotification);
-    const auto colour = shouldSolo ? juce::Colour (0xFFE1B948) : juce::Colour (0xFF2A2F3A);
+    const auto baseColour = juce::Colour (0xFFF8E81C);
+    const auto colour = shouldSolo ? baseColour : baseColour.withMultipliedBrightness (0.6f);
     soloButton.setColour (juce::TextButton::buttonColourId, colour);
-    soloButton.setColour (juce::TextButton::textColourOnId, shouldSolo ? juce::Colours::black : juce::Colours::white);
-    soloButton.setColour (juce::TextButton::textColourOffId, shouldSolo ? juce::Colours::black : juce::Colours::white);
+    soloButton.setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+    soloButton.setColour (juce::TextButton::textColourOffId, juce::Colours::black);
 }
 
 void TrackStripComponent::paint (juce::Graphics& g)
@@ -186,26 +272,48 @@ void TrackStripComponent::paint (juce::Graphics& g)
         g.drawRect (bounds, 2);
         g.fillRect (bounds.removeFromLeft (4));
     }
+
+    if (! gainSliderBounds.isEmpty())
+    {
+        const float zeroNorm = (0.0f - kMinTrackDb) / (kMaxTrackDb - kMinTrackDb);
+        const int markerX = gainSliderBounds.getX()
+                            + (int) std::round (gainSliderBounds.getWidth() * zeroNorm);
+        g.setColour (juce::Colours::white.withAlpha (0.35f));
+        g.drawLine ((float) markerX, (float) gainSliderBounds.getY(),
+                    (float) markerX, (float) gainSliderBounds.getBottom(), 1.5f);
+    }
 }
 
 void TrackStripComponent::resized()
 {
     auto r = getLocalBounds().reduced (8, 8);
-    auto top = r.removeFromTop (26);
+    auto top = r.removeFromTop (24);
     auto numberArea = top.removeFromLeft (30);
     numberLabel.setBounds (numberArea);
 
-    auto buttons = top.removeFromRight (150);
+    auto buttons = top.removeFromRight (118);
     nameLabel.setBounds (top);
     muteButton.setBounds (buttons.removeFromLeft (36).reduced (0, 2));
     soloButton.setBounds (buttons.removeFromLeft (36).reduced (0, 2));
     fxButton.setBounds (buttons.removeFromLeft (46).reduced (0, 2));
-    aiButton.setBounds (buttons.removeFromLeft (32).reduced (0, 2));
 
-    r.removeFromTop (6);
-    instrumentButton.setBounds (r.removeFromTop (24));
-    r.removeFromTop (8);
-    volumeSlider.setBounds (r.removeFromTop (16).reduced (12, 0));
+    r.removeFromTop (4);
+    auto instrumentBounds = r.removeFromTop (20);
+    const int instrumentWidth = juce::jmin (instrumentBounds.getWidth(), 110);
+    instrumentButton.setBounds (instrumentBounds.withSizeKeepingCentre (instrumentWidth,
+                                                                        instrumentBounds.getHeight()));
+    r.removeFromTop (4);
+
+    auto gainRow = r.removeFromTop (14);
+    gainLabel.setBounds (gainRow.removeFromLeft (40));
+    gainValueLabel.setBounds (gainRow.removeFromRight (70));
+
+    r.removeFromTop (4);
+    auto sliderBounds = r.removeFromTop (24).reduced (12, 0);
+    const int sliderWidth = juce::jmin (sliderBounds.getWidth(), 120);
+    sliderBounds = sliderBounds.withSizeKeepingCentre (sliderWidth, sliderBounds.getHeight());
+    volumeSlider.setBounds (sliderBounds);
+    gainSliderBounds = sliderBounds;
 }
 
 void TrackStripComponent::mouseDown (const juce::MouseEvent&)
@@ -221,4 +329,10 @@ void TrackStripComponent::mouseUp (const juce::MouseEvent& event)
         if (onContextMenuRequested)
             onContextMenuRequested (trackIndex, this);
     }
+}
+
+void TrackStripComponent::updateGainReadout (float normalizedValue)
+{
+    const float db = normalizedToDb (normalizedValue);
+    gainValueLabel.setText (formatDb (db), juce::dontSendNotification);
 }

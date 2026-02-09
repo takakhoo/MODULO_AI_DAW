@@ -15,12 +15,12 @@ public:
     //==============================================================================
     Application() = default;
 
-    const juce::String getApplicationName() override       { return "Reason"; }
-    const juce::String getApplicationVersion() override    { return "Reason"; }
+    const juce::String getApplicationName() override       { return "Modulo"; }
+    const juce::String getApplicationVersion() override    { return "Modulo"; }
 
     void initialise (const juce::String&) override
     {
-        mainWindow.reset (new MainWindow ("Reason", new ReasonMainComponent(), *this));
+        mainWindow.reset (new MainWindow ("Modulo", new ReasonMainComponent(), *this));
     }
 
     void shutdown() override                         { mainWindow = nullptr; }

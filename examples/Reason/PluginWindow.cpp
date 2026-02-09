@@ -163,6 +163,8 @@ private:
         JUCE_AUTORELEASEPOOL
         {
             setConstrainer (nullptr);
+            if (editor != nullptr)
+                clearContentComponent();
             editor.reset();
 
             if (newEditor != nullptr)
@@ -187,7 +189,10 @@ private:
         }
     }
 
-    void userTriedToCloseWindow() override { plugin.windowState->closeWindowExplicitly(); }
+    void userTriedToCloseWindow() override
+    {
+        plugin.windowState->closeWindowExplicitly();
+    }
     void closeButtonPressed() override { userTriedToCloseWindow(); }
     float getDesktopScaleFactor() const override { return 1.0f; }
 

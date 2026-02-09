@@ -4,7 +4,8 @@
 
 #include "SessionController.h"
 
-class PianoRollComponent : public juce::Component
+class PianoRollComponent : public juce::Component,
+                           private juce::Timer
 {
 public:
     PianoRollComponent();
@@ -24,9 +25,11 @@ public:
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
     void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& details) override;
+    void mouseMagnify (const juce::MouseEvent& event, float scaleFactor) override;
     bool keyPressed (const juce::KeyPress& key) override;
 
 private:
+    void timerCallback() override;
     struct NoteRect
     {
         SessionController::MidiNoteInfo info;
@@ -54,6 +57,7 @@ private:
     float getNoteHeight (juce::Rectangle<int> area) const;
     bool isBlackKey (int noteNumber) const;
     bool isNoteSelected (const juce::ValueTree& state) const;
+    juce::Rectangle<int> getNoteGridArea() const;
 
     SessionController* session = nullptr;
     uint64_t clipId = 0;
@@ -90,6 +94,10 @@ private:
     bool dragAllResizing = false;
     double dragAllResizeDelta = 0.0;
     std::vector<SessionController::MidiNoteInfo> dragAllBaseNotes;
+    bool isLassoSelecting = false;
+    bool lassoAdditive = false;
+    juce::Point<int> lassoStartPoint;
+    juce::Rectangle<int> lassoSelection;
 
     std::vector<SessionController::MidiNoteInfo> clipboardNotes;
     double clipboardStartSeconds = 0.0;
