@@ -85,6 +85,102 @@ double getBeatsPerBarAtTime (te::Edit& edit, te::TimePosition time)
     return 4.0;
 }
 
+void enforceChordSustainEveryBar (te::Edit& edit, te::MidiClip& clip, juce::UndoManager& undo)
+{
+    auto& seq = clip.getSequence();
+    std::vector<te::MidiControllerEvent*> sustainEvents;
+    for (auto* c : seq.getControllerEvents())
+    {
+        if (c != nullptr && c->getType() == 64)
+            sustainEvents.push_back (c);
+    }
+    for (auto* c : sustainEvents)
+        seq.removeControllerEvent (*c, &undo);
+
+    const auto clipStart = clip.getPosition().getStart();
+    const auto clipRange = clip.getEditTimeRange();
+    const auto clipStartBeatAbs = te::toBeats (clipStart, edit.tempoSequence);
+    const auto clipEndBeatAbs = te::toBeats (clipRange.getEnd(), edit.tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeatAbs - clipStartBeatAbs).inBeats());
+    const double beatsPerBar = juce::jmax (1.0, getBeatsPerBarAtTime (edit, clipStart));
+    const double liftBeforeBarEndBeats = 0.25;
+    const int sustainOn = 127 << 7;
+    const int sustainOff = 0;
+
+    for (double barStart = 0.0; barStart < clipLengthBeats; barStart += beatsPerBar)
+    {
+        const double barEnd = juce::jmin (clipLengthBeats, barStart + beatsPerBar);
+        const double offBeat = juce::jmax (barStart + 0.0625, barEnd - liftBeforeBarEndBeats);
+        seq.addControllerEvent (te::BeatPosition::fromBeats (barStart), 64, sustainOn, &undo);
+        seq.addControllerEvent (te::BeatPosition::fromBeats (offBeat), 64, sustainOff, &undo);
+    }
+}
+
+bool parseBarBeatText (const juce::String& text, int& outBar, int& outBeat)
+{
+    auto digits = text.retainCharacters ("0123456789|");
+    auto parts = juce::StringArray::fromTokens (digits, "|", "");
+    if (parts.size() < 2)
+        return false;
+    outBar = parts[0].getIntValue();
+    outBeat = parts[1].getIntValue();
+    return outBar > 0 && outBeat > 0;
+}
+
+juce::Array<int> chordSymbolToPitches (juce::String symbol)
+{
+    symbol = symbol.trim();
+    if (symbol.isEmpty())
+        return {};
+
+    auto upper = symbol.toUpperCase();
+    const juce::String rootText = upper.substring (0, upper.length() >= 2 && (upper[1] == '#' || upper[1] == 'B') ? 2 : 1);
+    juce::String qualityText = symbol.substring (rootText.length()).toLowerCase().trim();
+
+    int rootSemitone = 0;
+    if (rootText == "C") rootSemitone = 0;
+    else if (rootText == "C#" || rootText == "DB") rootSemitone = 1;
+    else if (rootText == "D") rootSemitone = 2;
+    else if (rootText == "D#" || rootText == "EB") rootSemitone = 3;
+    else if (rootText == "E" || rootText == "FB") rootSemitone = 4;
+    else if (rootText == "F" || rootText == "E#") rootSemitone = 5;
+    else if (rootText == "F#" || rootText == "GB") rootSemitone = 6;
+    else if (rootText == "G") rootSemitone = 7;
+    else if (rootText == "G#" || rootText == "AB") rootSemitone = 8;
+    else if (rootText == "A") rootSemitone = 9;
+    else if (rootText == "A#" || rootText == "BB") rootSemitone = 10;
+    else if (rootText == "B" || rootText == "CB") rootSemitone = 11;
+
+    juce::Array<int> intervals;
+    if (qualityText.startsWith ("dim"))
+        intervals.addArray ({ 0, 3, 6 });
+    else if (qualityText.startsWith ("aug"))
+        intervals.addArray ({ 0, 4, 8 });
+    else if (qualityText.startsWith ("sus2"))
+        intervals.addArray ({ 0, 2, 7 });
+    else if (qualityText.startsWith ("sus4") || qualityText.startsWith ("sus"))
+        intervals.addArray ({ 0, 5, 7 });
+    else if (qualityText.startsWith ("maj"))
+        intervals.addArray ({ 0, 4, 7 });
+    else if (qualityText.startsWith ("m"))
+        intervals.addArray ({ 0, 3, 7 });
+    else
+        intervals.addArray ({ 0, 4, 7 });
+
+    if (qualityText.contains ("maj7"))
+        intervals.add (11);
+    else if (qualityText.contains ("7"))
+        intervals.add (10);
+
+    // Keep generated chords in a musical mid register.
+    const int baseMidi = 48 + rootSemitone; // C3-based root
+    juce::Array<int> pitches;
+    for (auto i : intervals)
+        pitches.add (baseMidi + i);
+    pitches.sort();
+    return pitches;
+}
+
 te::SettingID getKnownPluginListSettingId()
 {
    #if JUCE_64BIT
@@ -696,6 +792,25 @@ juce::Array<float> SessionController::getTrackVolumes() const
     return volumes;
 }
 
+juce::Array<float> SessionController::getTrackPans() const
+{
+    juce::Array<float> pans;
+    if (edit == nullptr)
+        return pans;
+
+    auto tracks = te::getAudioTracks (*edit);
+    for (int i = 0; i < tracks.size(); ++i)
+    {
+        auto* track = tracks.getUnchecked (i);
+        if (auto* volume = track->getVolumePlugin())
+            pans.add (juce::jlimit (-1.0f, 1.0f, volume->getPan()));
+        else
+            pans.add (0.0f);
+    }
+
+    return pans;
+}
+
 void SessionController::setTrackVolume (int index, float normalizedValue)
 {
     if (auto* track = getAudioTrack (index))
@@ -706,6 +821,15 @@ void SessionController::setTrackVolume (int index, float normalizedValue)
             const float db = kMinTrackDb + (kMaxTrackDb - kMinTrackDb) * norm;
             volume->setVolumeDb (db);
         }
+    }
+}
+
+void SessionController::setTrackPan (int index, float panValue)
+{
+    if (auto* track = getAudioTrack (index))
+    {
+        if (auto* volume = track->getVolumePlugin())
+            volume->setPan (juce::jlimit (-1.0f, 1.0f, panValue));
     }
 }
 
@@ -1794,6 +1918,566 @@ std::vector<SessionController::ChordLabel> SessionController::getChordLabelsForT
     }
 
     return {};
+}
+
+std::vector<SessionController::ChordPreviewNote> SessionController::getChordCellPreviewNotesForTrack (int trackIndex, int measure, int beat) const
+{
+    std::vector<ChordPreviewNote> result;
+    if (edit == nullptr || measure < 1 || beat < 1)
+        return result;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return result;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+    if (chordClip == nullptr)
+        return result;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return result;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    struct LabelEntry { double startBeat = 0.0; };
+    std::vector<LabelEntry> entries;
+    entries.reserve ((size_t) labelsState.getNumChildren());
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+        entries.push_back ({ (double) labelsState.getChild (i).getProperty ("beat") });
+
+    std::sort (entries.begin(), entries.end(), [] (const LabelEntry& a, const LabelEntry& b) { return a.startBeat < b.startBeat; });
+
+    int targetIndex = -1;
+    for (int i = 0; i < (int) entries.size(); ++i)
+    {
+        const auto beatPos = clipStartBeat + te::BeatDuration::fromBeats (entries[(size_t) i].startBeat);
+        const auto timeSeconds = edit->tempoSequence.toTime (beatPos).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetIndex = i;
+            break;
+        }
+    }
+    if (targetIndex < 0)
+        return result;
+
+    const double startBeat = entries[(size_t) targetIndex].startBeat;
+    const double endBeat = (targetIndex + 1 < (int) entries.size()) ? entries[(size_t) targetIndex + 1].startBeat : clipLengthBeats;
+    if (endBeat <= startBeat + 0.001)
+        return result;
+
+    auto& seq = chordClip->getSequence();
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+        const double nStart = note->getStartBeat().inBeats();
+        const double nEnd = nStart + note->getLengthBeats().inBeats();
+        if (nStart < endBeat && nEnd > startBeat)
+        {
+            const double localStart = juce::jmax (0.0, nStart - startBeat);
+            const double localEnd = juce::jmin (endBeat - startBeat, nEnd - startBeat);
+            result.push_back ({ note->getNoteNumber(), localStart, juce::jmax (0.0625, localEnd - localStart) });
+        }
+    }
+
+    std::sort (result.begin(), result.end(), [] (const ChordPreviewNote& a, const ChordPreviewNote& b)
+    {
+        if (a.startBeats < b.startBeats)
+            return a.startBeats < b.startBeats;
+        if (a.startBeats > b.startBeats)
+            return false;
+        return a.pitch < b.pitch;
+    });
+    return result;
+}
+
+bool SessionController::applyChordEditAction (int trackIndex, int measure, int beat, ChordEditAction action)
+{
+    if (edit == nullptr || measure < 1 || beat < 1)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return false;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    auto parseBarBeat = [] (const juce::String& text, int& outBar, int& outBeat) -> bool
+    {
+        auto digits = text.retainCharacters ("0123456789|");
+        auto parts = juce::StringArray::fromTokens (digits, "|", "");
+        if (parts.size() < 2)
+            return false;
+        outBar = parts[0].getIntValue();
+        outBeat = parts[1].getIntValue();
+        return outBar > 0 && outBeat > 0;
+    };
+
+    struct LabelEntry
+    {
+        int childIndex = -1;
+        double startBeat = 0.0;
+    };
+    std::vector<LabelEntry> entries;
+    entries.reserve ((size_t) labelsState.getNumChildren());
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        auto child = labelsState.getChild (i);
+        entries.push_back ({ i, (double) child.getProperty ("beat") });
+    }
+
+    std::sort (entries.begin(), entries.end(),
+               [] (const LabelEntry& a, const LabelEntry& b) { return a.startBeat < b.startBeat; });
+
+    int targetSortedIndex = -1;
+    for (int i = 0; i < (int) entries.size(); ++i)
+    {
+        const auto beatPos = clipStartBeat + te::BeatDuration::fromBeats (entries[(size_t) i].startBeat);
+        const auto timeSeconds = edit->tempoSequence.toTime (beatPos).inSeconds();
+        int rowMeasure = 0, rowBeat = 0;
+        if (! parseBarBeat (getBarsAndBeatsText (timeSeconds), rowMeasure, rowBeat))
+            continue;
+
+        if (rowMeasure == measure && rowBeat == beat)
+        {
+            targetSortedIndex = i;
+            break;
+        }
+    }
+
+    if (targetSortedIndex < 0)
+        return false;
+
+    const double startBeat = entries[(size_t) targetSortedIndex].startBeat;
+    const double endBeat = (targetSortedIndex + 1 < (int) entries.size())
+        ? entries[(size_t) targetSortedIndex + 1].startBeat
+        : clipLengthBeats;
+
+    if (endBeat <= startBeat + 0.001)
+        return false;
+
+    auto& seq = chordClip->getSequence();
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Edit Chord Cell");
+    auto finalize = [&]() -> bool
+    {
+        enforceChordSustainEveryBar (*edit, *chordClip, undo);
+        return true;
+    };
+
+    std::vector<te::MidiNote*> notesToRemove;
+    juce::Array<int> pitches;
+    int velocity = 100;
+    struct ExistingNote { double start = 0.0; double length = 0.0; int pitch = 60; int vel = 100; };
+    std::vector<ExistingNote> existingNotes;
+
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+
+        const double noteStart = note->getStartBeat().inBeats();
+        const double noteEnd = noteStart + note->getLengthBeats().inBeats();
+        const bool overlaps = noteStart < endBeat && noteEnd > startBeat;
+        if (! overlaps)
+            continue;
+
+        notesToRemove.push_back (note);
+        if (! pitches.contains (note->getNoteNumber()))
+            pitches.add (note->getNoteNumber());
+        velocity = juce::jmax (velocity, note->getVelocity());
+        existingNotes.push_back ({ noteStart, note->getLengthBeats().inBeats(), note->getNoteNumber(), note->getVelocity() });
+    }
+
+    for (auto* note : notesToRemove)
+        seq.removeNote (*note, &undo);
+
+    if (action == ChordEditAction::deleteChord)
+    {
+        labelsState.removeChild (entries[(size_t) targetSortedIndex].childIndex, &undo);
+        return finalize();
+    }
+
+    if (pitches.isEmpty())
+        return finalize();
+
+    pitches.sort();
+    const double lengthBeats = endBeat - startBeat;
+
+    if (action == ChordEditAction::semitoneUp || action == ChordEditAction::semitoneDown
+        || action == ChordEditAction::octaveUp || action == ChordEditAction::octaveDown)
+    {
+        int shift = 0;
+        if (action == ChordEditAction::semitoneUp) shift = 1;
+        if (action == ChordEditAction::semitoneDown) shift = -1;
+        if (action == ChordEditAction::octaveUp) shift = 12;
+        if (action == ChordEditAction::octaveDown) shift = -12;
+        for (const auto& n : existingNotes)
+        {
+            const int shiftedPitch = juce::jlimit (0, 127, n.pitch + shift);
+            seq.addNote (shiftedPitch,
+                         te::BeatPosition::fromBeats (n.start),
+                         te::BeatDuration::fromBeats (juce::jmax (0.0625, n.length)),
+                         n.vel, 0, &undo);
+        }
+        return finalize();
+    }
+
+    if (action == ChordEditAction::inversionUp || action == ChordEditAction::inversionDown)
+    {
+        if (existingNotes.empty())
+            return finalize();
+
+        int targetIndex = 0;
+        if (action == ChordEditAction::inversionUp)
+        {
+            for (int i = 1; i < (int) existingNotes.size(); ++i)
+            {
+                const auto& best = existingNotes[(size_t) targetIndex];
+                const auto& cur = existingNotes[(size_t) i];
+                if (cur.pitch < best.pitch || (cur.pitch == best.pitch && cur.start < best.start))
+                    targetIndex = i;
+            }
+            existingNotes[(size_t) targetIndex].pitch = juce::jlimit (0, 127, existingNotes[(size_t) targetIndex].pitch + 12);
+        }
+        else
+        {
+            for (int i = 1; i < (int) existingNotes.size(); ++i)
+            {
+                const auto& best = existingNotes[(size_t) targetIndex];
+                const auto& cur = existingNotes[(size_t) i];
+                if (cur.pitch > best.pitch || (cur.pitch == best.pitch && cur.start > best.start))
+                    targetIndex = i;
+            }
+            existingNotes[(size_t) targetIndex].pitch = juce::jlimit (0, 127, existingNotes[(size_t) targetIndex].pitch - 12);
+        }
+
+        for (const auto& n : existingNotes)
+        {
+            seq.addNote (n.pitch,
+                         te::BeatPosition::fromBeats (n.start),
+                         te::BeatDuration::fromBeats (juce::jmax (0.0625, n.length)),
+                         n.vel, 0, &undo);
+        }
+        return finalize();
+    }
+
+    if (action == ChordEditAction::arpeggio)
+    {
+        const int noteCount = pitches.size();
+        const double eighthStep = 0.5;
+        const double sixteenthStep = 0.25;
+        const double minTail = 0.125;
+        const double neededForEighth = (juce::jmax (0, noteCount - 1) * eighthStep) + minTail;
+        const double stepBeats = (lengthBeats >= neededForEighth) ? eighthStep : sixteenthStep;
+
+        for (int i = 0; i < pitches.size(); ++i)
+        {
+            const double noteStart = startBeat + (stepBeats * i);
+            const double elapsed = stepBeats * i;
+            if (elapsed >= lengthBeats)
+                break;
+
+            const double remaining = lengthBeats - elapsed;
+            const double noteLength = juce::jmax (minTail, juce::jmin (stepBeats * 0.95, remaining));
+            seq.addNote (pitches[i],
+                         te::BeatPosition::fromBeats (noteStart),
+                         te::BeatDuration::fromBeats (noteLength),
+                         velocity, 0, &undo);
+        }
+        return finalize();
+    }
+
+    if (action == ChordEditAction::doubleTime)
+    {
+        const double half = lengthBeats * 0.5;
+
+        auto isArpeggiatedCell = [&]() -> bool
+        {
+            if (existingNotes.size() <= 1 || pitches.isEmpty())
+                return false;
+
+            struct StartGroup
+            {
+                double start = 0.0;
+                juce::Array<int> groupPitches;
+            };
+
+            std::vector<StartGroup> groups;
+            for (const auto& n : existingNotes)
+            {
+                bool merged = false;
+                for (auto& g : groups)
+                {
+                    if (std::abs (g.start - n.start) < 0.0001)
+                    {
+                        if (! g.groupPitches.contains (n.pitch))
+                            g.groupPitches.add (n.pitch);
+                        merged = true;
+                        break;
+                    }
+                }
+                if (! merged)
+                {
+                    StartGroup g;
+                    g.start = n.start;
+                    g.groupPitches.add (n.pitch);
+                    groups.push_back (std::move (g));
+                }
+            }
+
+            // Blocked chords have every pitch at each start instant.
+            for (const auto& g : groups)
+                if (g.groupPitches.size() < pitches.size())
+                    return true;
+
+            return false;
+        };
+
+        if (isArpeggiatedCell())
+        {
+            // Preserve the arpeggio shape and repeat it twice in the same cell (double-time feel).
+            double patternSpan = 0.0;
+            for (const auto& n : existingNotes)
+            {
+                const double relStart = juce::jmax (0.0, n.start - startBeat);
+                patternSpan = juce::jmax (patternSpan, relStart + juce::jmax (0.0625, n.length));
+            }
+            if (patternSpan <= 0.0001)
+                patternSpan = half;
+
+            const double scale = juce::jmax (0.05, half / patternSpan);
+            const double minLen = 0.0625;
+
+            for (const auto& n : existingNotes)
+            {
+                const double relStart = juce::jmax (0.0, n.start - startBeat) * scale;
+                const double relLen = juce::jmax (minLen, n.length * scale);
+
+                for (int repeat = 0; repeat < 2; ++repeat)
+                {
+                    const double chunkStart = startBeat + (repeat * half);
+                    double noteStart = chunkStart + relStart;
+                    double noteEnd = juce::jmin (chunkStart + half, noteStart + relLen);
+                    if (noteEnd <= noteStart + 0.0001)
+                        continue;
+
+                    seq.addNote (juce::jlimit (0, 127, n.pitch),
+                                 te::BeatPosition::fromBeats (noteStart),
+                                 te::BeatDuration::fromBeats (juce::jmax (minLen, noteEnd - noteStart)),
+                                 n.vel, 0, &undo);
+                }
+            }
+        }
+        else
+        {
+            const double noteLength = juce::jmax (0.125, juce::jmin (half * 0.95, lengthBeats * 0.49));
+            for (auto pitch : pitches)
+            {
+                seq.addNote (pitch,
+                             te::BeatPosition::fromBeats (startBeat),
+                             te::BeatDuration::fromBeats (noteLength),
+                             velocity, 0, &undo);
+                seq.addNote (pitch,
+                             te::BeatPosition::fromBeats (startBeat + half),
+                             te::BeatDuration::fromBeats (noteLength),
+                             velocity, 0, &undo);
+            }
+        }
+        return finalize();
+    }
+
+    // Block
+    const auto start = te::BeatPosition::fromBeats (startBeat);
+    const auto dur = te::BeatDuration::fromBeats (juce::jmax (0.125, lengthBeats));
+    for (auto pitch : pitches)
+        seq.addNote (pitch, start, dur, velocity, 0, &undo);
+
+    return finalize();
+}
+
+bool SessionController::setChordAtCell (int trackIndex, int measure, int beat, const juce::String& chordSymbol)
+{
+    if (edit == nullptr || measure < 1 || beat < 1 || chordSymbol.trim().isEmpty())
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid())
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getOrCreateChildWithName ("CHORD_LABELS", nullptr);
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+    if (clipLengthBeats <= 0.001)
+        return false;
+
+    double targetStartBeat = -1.0;
+    for (double beatOffset = 0.0; beatOffset <= clipLengthBeats + 0.0001; beatOffset += 1.0)
+    {
+        const auto absBeat = clipStartBeat + te::BeatDuration::fromBeats (beatOffset);
+        const auto timeSeconds = edit->tempoSequence.toTime (absBeat).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetStartBeat = beatOffset;
+            break;
+        }
+    }
+
+    if (targetStartBeat < 0.0)
+        return false;
+
+    double nextLabelBeat = clipLengthBeats;
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        const auto child = labelsState.getChild (i);
+        const double b = (double) child.getProperty ("beat");
+        if (b > targetStartBeat + 0.0001)
+            nextLabelBeat = juce::jmin (nextLabelBeat, b);
+    }
+
+    double targetEndBeat = juce::jmin (clipLengthBeats, nextLabelBeat);
+    auto& seq = chordClip->getSequence();
+
+    // Preserve the original occupied span of this cell when rewriting root/quality.
+    double occupiedEndBeat = targetStartBeat;
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+
+        const double noteStart = note->getStartBeat().inBeats();
+        if (noteStart < targetStartBeat - 0.0001 || noteStart >= targetEndBeat + 0.0001)
+            continue;
+
+        const double noteEnd = noteStart + note->getLengthBeats().inBeats();
+        occupiedEndBeat = juce::jmax (occupiedEndBeat, juce::jmin (noteEnd, targetEndBeat));
+    }
+
+    if (occupiedEndBeat > targetStartBeat + 0.001)
+        targetEndBeat = occupiedEndBeat;
+    else if (targetEndBeat <= targetStartBeat + 0.001)
+        targetEndBeat = juce::jmin (clipLengthBeats, targetStartBeat + 1.0);
+
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Set Chord At Cell");
+
+    std::vector<te::MidiNote*> notesToRemove;
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+        const double noteStart = note->getStartBeat().inBeats();
+        const double noteEnd = noteStart + note->getLengthBeats().inBeats();
+        if (noteStart < targetEndBeat && noteEnd > targetStartBeat)
+            notesToRemove.push_back (note);
+    }
+    for (auto* note : notesToRemove)
+        seq.removeNote (*note, &undo);
+
+    juce::ValueTree labelToUpdate;
+    for (int i = labelsState.getNumChildren() - 1; i >= 0; --i)
+    {
+        auto child = labelsState.getChild (i);
+        const double b = (double) child.getProperty ("beat");
+        if (std::abs (b - targetStartBeat) < 0.0001)
+        {
+            if (! labelToUpdate.isValid())
+                labelToUpdate = child;
+            else
+                labelsState.removeChild (i, &undo);
+        }
+    }
+
+    if (! labelToUpdate.isValid())
+    {
+        labelToUpdate = juce::ValueTree ("CHORD_LABEL");
+        labelToUpdate.setProperty ("beat", targetStartBeat, nullptr);
+        labelsState.addChild (labelToUpdate, -1, &undo);
+    }
+    labelToUpdate.setProperty ("symbol", chordSymbol.trim(), &undo);
+
+    auto pitches = chordSymbolToPitches (chordSymbol);
+    const double durBeats = juce::jmax (0.125, targetEndBeat - targetStartBeat);
+    for (auto p : pitches)
+    {
+        seq.addNote (p,
+                     te::BeatPosition::fromBeats (targetStartBeat),
+                     te::BeatDuration::fromBeats (durBeats),
+                     100, 0, &undo);
+    }
+
+    enforceChordSustainEveryBar (*edit, *chordClip, undo);
+    return true;
 }
 
 std::vector<SessionController::PluginChoice> SessionController::getInstrumentChoices() const

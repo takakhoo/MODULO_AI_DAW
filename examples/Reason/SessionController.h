@@ -103,10 +103,31 @@ public:
         juce::String symbol;
     };
 
+    struct ChordPreviewNote
+    {
+        int pitch = 60;
+        double startBeats = 0.0;
+        double lengthBeats = 0.25;
+    };
+
     enum class ChordPlaybackStyle
     {
         block,
         arpeggio
+    };
+
+    enum class ChordEditAction
+    {
+        block,
+        arpeggio,
+        deleteChord,
+        doubleTime,
+        semitoneUp,
+        semitoneDown,
+        octaveUp,
+        octaveDown,
+        inversionUp,
+        inversionDown
     };
 
     SessionController();
@@ -141,6 +162,7 @@ public:
     juce::StringArray getTrackNames() const;
     juce::StringArray getTrackInstrumentNames() const;
     juce::Array<float> getTrackVolumes() const;
+    juce::Array<float> getTrackPans() const;
     juce::Array<int> getTrackEffectCounts() const;
     juce::Array<bool> getTrackMuteStates() const;
     juce::Array<bool> getTrackSoloStates() const;
@@ -148,6 +170,7 @@ public:
     std::vector<PluginInfo> getTrackEffects (int trackIndex) const;
 
     void setTrackVolume (int index, float normalizedValue);
+    void setTrackPan (int index, float panValue);
     float getTrackVolume (int index) const;
     void setTrackMute (int index, bool shouldMute);
     void setTrackSolo (int index, bool shouldSolo);
@@ -200,6 +223,9 @@ public:
                                   ChordPlaybackStyle playbackStyle = ChordPlaybackStyle::block);
     std::vector<ChordLabel> getChordLabelsForClip (uint64_t clipId) const;
     std::vector<ChordLabel> getChordLabelsForTrack (int trackIndex) const;
+    std::vector<ChordPreviewNote> getChordCellPreviewNotesForTrack (int trackIndex, int measure, int beat) const;
+    bool applyChordEditAction (int trackIndex, int measure, int beat, ChordEditAction action);
+    bool setChordAtCell (int trackIndex, int measure, int beat, const juce::String& chordSymbol);
 
     std::vector<PluginChoice> getInstrumentChoices() const;
     std::vector<PluginChoice> getEffectChoices() const;

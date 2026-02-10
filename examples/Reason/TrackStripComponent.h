@@ -13,6 +13,7 @@ public:
     void setTrackNumber (int number);
     void setSelected (bool shouldSelect);
     void setVolumeNormalized (float value);
+    void setPanNormalized (float value);
     void setEffectCount (int count);
     void setMuted (bool shouldMute);
     void setSolo (bool shouldSolo);
@@ -22,6 +23,7 @@ public:
     std::function<void (int)> onSelected;
     std::function<void (int, const juce::String&)> onNameChanged;
     std::function<void (int, float)> onVolumeChanged;
+    std::function<void (int, float)> onPanChanged;
     std::function<void (int)> onInstrumentClicked;
     std::function<void (int)> onFxClicked;
     std::function<void (int, bool)> onMuteChanged;
@@ -41,6 +43,13 @@ private:
                                const juce::Slider::SliderStyle style, juce::Slider& slider) override;
     };
 
+    struct PanKnobLookAndFeel : public juce::LookAndFeel_V4
+    {
+        void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
+                               float sliderPosProportional, float rotaryStartAngle, float rotaryEndAngle,
+                               juce::Slider& slider) override;
+    };
+
     void updateGainReadout (float normalizedValue);
 
     int trackIndex = 0;
@@ -51,10 +60,13 @@ private:
     juce::Slider volumeSlider;
     juce::Label gainLabel;
     juce::Label gainValueLabel;
+    juce::Slider panSlider;
+    juce::Label panLabel;
     juce::TextButton instrumentButton { "Instrument" };
     juce::TextButton fxButton { "FX" };
     juce::TextButton muteButton { "M" };
     juce::TextButton soloButton { "S" };
     juce::Rectangle<int> gainSliderBounds;
     GainSliderLookAndFeel gainSliderLaf;
+    PanKnobLookAndFeel panKnobLaf;
 };

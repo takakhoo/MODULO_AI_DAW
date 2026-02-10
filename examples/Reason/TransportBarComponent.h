@@ -46,9 +46,9 @@ private:
                                      juce::Colours::transparentBlack, juce::Colours::transparentBlack };
     juce::TextButton fileButton { "File" };
     juce::TextButton chordsButton { "Generate Chords" };
-    juce::TextButton metronomeButton { "Metronome" };
+    juce::DrawableButton metronomeButton { "Metronome", juce::DrawableButton::ImageFitted };
     juce::TextButton midiInputButton { "MIDI In" };
-    juce::TextButton settingsButton { "Settings" };
+    juce::DrawableButton settingsButton { "Settings", juce::DrawableButton::ImageFitted };
 
     juce::Label timeLabel { {}, "00:00.0" };
     juce::Label barsLabel { {}, "Bar 1 | Beat 1" };
@@ -59,4 +59,6 @@ private:
     bool recordActive = false;
     bool recordBlinkOn = false;
     juce::Rectangle<int> displayPanelBounds;
+    juce::Rectangle<int> moduloBounds;
+    juce::Image chordsIcon;
 };

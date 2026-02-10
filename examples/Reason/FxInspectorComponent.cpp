@@ -15,24 +15,24 @@ public:
         addAndMakeVisible (removeButton);
 
         enableButton.setClickingTogglesState (true);
-        enableButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF2A2F3A));
-        enableButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+        enableButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF3A2A12));
+        enableButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFFFE6B3));
         enableButton.onClick = [this]
         {
             if (onEnabledChanged)
                 onEnabledChanged (slotId, enableButton.getToggleState());
         };
 
-        nameButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1F232A));
-        nameButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+        nameButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF1A150E));
+        nameButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFFFE6B3));
         nameButton.onClick = [this]
         {
             if (onSelected)
                 onSelected (slotId);
         };
 
-        removeButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF3B2A2A));
-        removeButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+        removeButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF4A2018));
+        removeButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFFFD2C2));
         removeButton.onClick = [this]
         {
             if (onRemoved)
@@ -45,10 +45,10 @@ public:
         slotId = id;
         nameButton.setButtonText (name);
         enableButton.setToggleState (enabled, juce::dontSendNotification);
-        const auto enabledColour = enabled ? juce::Colour (0xFF246B63) : juce::Colour (0xFF2A2F3A);
+        const auto enabledColour = enabled ? juce::Colour (0xFF8A621F) : juce::Colour (0xFF3A2A12);
         enableButton.setColour (juce::TextButton::buttonColourId, enabledColour);
 
-        auto nameColour = selected ? juce::Colour (0xFF2D465F) : juce::Colour (0xFF1F232A);
+        auto nameColour = selected ? juce::Colour (0xFF5A431D) : juce::Colour (0xFF1A150E);
         nameButton.setColour (juce::TextButton::buttonColourId, nameColour);
     }
 
@@ -80,16 +80,16 @@ FxInspectorComponent::FxInspectorComponent()
 
     addAndMakeVisible (emptyLabel);
     emptyLabel.setJustificationType (juce::Justification::centred);
-    emptyLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
+    emptyLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFD7BE8D).withAlpha (0.8f));
     emptyLabel.setText ("No FX on this track", juce::dontSendNotification);
 
     addAndMakeVisible (editorPlaceholder);
     editorPlaceholder.setJustificationType (juce::Justification::centred);
-    editorPlaceholder.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
+    editorPlaceholder.setColour (juce::Label::textColourId, juce::Colour (0xFFD7BE8D).withAlpha (0.8f));
     editorPlaceholder.setText ("Select an effect to edit", juce::dontSendNotification);
 
     headerLabel.setText ("FX", juce::dontSendNotification);
-    headerLabel.setColour (juce::Label::textColourId, juce::Colours::white);
+    headerLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFFFE6B3));
     headerLabel.setFont (juce::FontOptions (13.0f, juce::Font::bold));
 }
 
@@ -136,11 +136,11 @@ void FxInspectorComponent::clearEditor()
 
 void FxInspectorComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xFF1C1F25));
+    g.fillAll (juce::Colour (0xFF13100B));
 
-    g.setColour (juce::Colour (0xFF2B2F36));
+    g.setColour (juce::Colour (0xFF3A2B14));
     g.fillRect (getLocalBounds().removeFromTop (28));
-    g.setColour (juce::Colour (0xFF353A44));
+    g.setColour (juce::Colour (0xFF5A431D));
     g.drawLine (0.0f, 28.0f, (float) getWidth(), 28.0f);
 }
 

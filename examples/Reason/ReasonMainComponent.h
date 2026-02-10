@@ -28,6 +28,7 @@ public:
 private:
     class PianoRollResizer;
     class TrackListResizer;
+    class InspectorResizer;
     class StartupOverlay;
 
     enum class ImportType
@@ -70,6 +71,7 @@ private:
     void handleTrackScroll (int newOffset);
     void showChordTrackMenu (int trackIndex, juce::Component* source);
     void setMainUiVisible (bool shouldBeVisible);
+    void updateChordToggleButton();
     void dismissStartupOverlay();
     void ensureRealchordsServer();
     bool pingRealchordsServer (int timeoutMs);
@@ -87,11 +89,14 @@ private:
     int pianoRollHeight = 220;
     bool pianoRollVisible = false;
     std::unique_ptr<TrackListResizer> trackListResizer;
+    std::unique_ptr<InspectorResizer> inspectorResizer;
     int trackListWidth = 260;
     juce::ScrollBar verticalScrollBar { true };
     int trackScrollOffset = 0;
     bool ignoreVerticalScrollCallback = false;
     int inspectorWidth = 280;
+    bool chordInspectorCollapsed = false;
+    bool fxInspectorVisible = false;
     bool isGeneratingChords = false;
     uint64_t clipClipboardId = 0;
     int instrumentRefreshCounter = 0;
@@ -102,6 +107,7 @@ private:
     std::unique_ptr<juce::ChildProcess> realchordsProcess;
     bool realchordsLaunchAttempted = false;
     std::unique_ptr<StartupOverlay> startupOverlay;
+    juce::TextButton chordInspectorToggleButton { "Chords v" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReasonMainComponent)
 };

@@ -16,6 +16,8 @@ This repository contains the code needed to build and run MODULO, including the 
 
 In short, MODULO is designed to return what deterministic generation leaves on the table.
 
+![Modulo Chord Workshop View](examples/Reason/ScreenView.png)
+
 ## What MODULO Does
 
 - Timeline-based DAW editing with audio + MIDI tracks.
@@ -28,34 +30,49 @@ In short, MODULO is designed to return what deterministic generation leaves on t
 
 ## Novelty and Thesis Focus
 
-The core novelty is the harmony-assistance workflow and its framing in Music AI:
+The novelty is not only "AI chord generation" in isolation. The contribution is an integrated musician-first interaction system where harmony generation, theory-aware editing, and timeline context all stay connected in one live DAW loop.
 
-- Melody-conditioned chord generation using a ReaLchords model path.
-- Fast generation of multiple chord alternatives for one melody phrase.
-- Immediate in-DAW placement of generated chord options on dedicated tracks.
-- Human-in-the-loop compositional exploration of harmonic possibilities.
+Core contribution axes:
 
-This focuses on expanding the creative "space of possibilities" for harmony rather than producing a single deterministic accompaniment.
+- **Algorithmic harmony exploration, not one-shot prediction:** melody-conditioned generation returns multiple viable accompaniments, materialized as comparable tracks in-context.
+- **Theory-operable editing surface:** users can transform generated material with operations musicians already reason in (quality, inversion, octave, semitone, block/arpeggio, double-time), directly at bar/beat cells.
+- **DAW-native control loop:** options are not abstract model outputs; they are immediately playable/editable MIDI in arrangement context with instrument, timing, and transport feedback.
+- **Musician agency preserved:** the system prioritizes rapid audition + comparison + revision over forcing a single "best" model answer.
+
+This is the thesis direction: expanding harmonic decision space for advanced users who think in functional harmony, voicing movement, and arrangement context, while still keeping iteration speed high enough for practical songwriting and production.
 
 ### Why this matters for Music AI
 
-- **From answer-machine to co-creator:** The model proposes options; the artist steers.
-- **Supports real compositional thinking:** Harmony writing is branching and comparative, not linear.
-- **Improves controllability:** Users can audition alternatives in context rather than regenerate blindly.
-- **Bridges research and production:** The same workflow runs inside a working DAW, not only a notebook/demo.
-- **Encourages stylistic diversity:** Multi-option outputs reduce convergence toward a single generic result.
+- **From answer-machine to co-creator:** The model proposes alternatives; the artist performs selection, transformation, and arrangement judgment.
+- **Supports real compositional cognition:** Harmonic writing is exploratory and comparative. MODULO encodes that branching process directly.
+- **Higher controllability with less friction:** Edits happen on the same grid where music is heard, without context switching to external tools.
+- **Research-to-production bridge:** The workflow is embedded in a real DAW runtime (recording, plugins, transport, timeline), not a disconnected notebook prototype.
+- **Diversity without randomness theater:** Multiple candidates are surfaced and can be transformed deterministically via theory operations, reducing collapse to generic patterns.
+
+## Music-Theory-First Interaction Design (HCI Novelty)
+
+MODULO's HCI contribution is the **Chord Workshop**: a persistent, grid-aware harmony editing environment that keeps symbolic intent and sonic feedback tightly coupled.
+
+- **Bar/beat cell model:** Each row is a bar, subdivided by beats, so harmony edits occur where musicians already reason temporally.
+- **Persistent controls instead of hidden popups:** Theory operations remain visible and discoverable, reducing interaction overhead and mode confusion.
+- **Live chord-state feedback:** The workshop tracks currently playing chord position and displays chord MIDI preview with pitch labels, so edits can be evaluated while transport is running.
+- **Embodied theory operations:** Actions such as inversion, semitone shift, and quality changes manipulate the actual MIDI realizations and preserve timing semantics.
+- **Comparative workflow support:** Multiple generated chord-option tracks can be inspected and reshaped quickly, enabling A/B-style harmonic decision making.
+
+This is a deliberate HCI stance: advanced users should be able to operate in music-theory terms without sacrificing DAW immediacy.
 
 ## AI Technical Deep Dive
 
-MODULO's harmony system is built around an online accompaniment framing rather than offline "generate full song" paradigms.
+MODULO's harmony subsystem follows an online accompaniment framing rather than an offline "generate entire song and accept" paradigm.
 
-- **Online conditioning:** Melody is represented as time-stepped note events, then streamed to a local generation service so chord decisions remain aligned with timeline context.
-- **Multi-hypothesis decoding:** Instead of one deterministic chord sequence, MODULO requests multiple candidate accompaniments in one pass and materializes each as a dedicated MIDI track for A/B comparison.
-- **Temporal alignment pipeline:** The app converts MIDI into frame-domain events for model IO, then reconstructs beat-aligned MIDI clips in Tracktion's edit timeline so generated harmony is immediately playable/editable.
-- **Interactive control surface:** Playback style controls (block/arpeggio), grid-locked arpeggio timing, and bar-level sustain automation turn model outputs into production-ready musical gestures.
-- **Human-in-the-loop ranking:** The final "selection" step is musical judgment in context (arrangement, timbre, rhythm), not only model confidence.
+- **Online conditioning pipeline:** Melody is converted into a time-stepped representation suitable for local model serving, preserving alignment to timeline context.
+- **Multi-hypothesis generation:** The system requests several accompaniment candidates for the same melody and instantiates each directly as an editable MIDI track.
+- **Timeline-faithful reconstruction:** Model-domain events are converted back into beat-accurate DAW MIDI clips with bar/beat coherence.
+- **Theory-aware post-generation transformations:** Generated chords can be transformed with deterministic operations (quality/root/inversion/octave/semitone/block/arpeggio/double-time) while preserving cell semantics.
+- **Gesture-level rendering controls:** Block/arpeggio behavior, beat-locked arpeggio timing, and sustain-shaping help close the gap between model output and production-ready material.
+- **In-context evaluation loop:** Candidate ranking is performed by the musician during playback in arrangement context, not by model confidence alone.
 
-This combination is the core contribution: model-guided harmonic exploration embedded directly inside a DAW interaction loop.
+The net effect is a hybrid intelligence loop: probabilistic generation for option discovery plus deterministic music-theory operations for controlled refinement.
 
 ## Architecture Overview
 

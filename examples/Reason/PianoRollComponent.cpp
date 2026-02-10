@@ -583,14 +583,13 @@ void PianoRollComponent::drawNotes (juce::Graphics& g, juce::Rectangle<int>, con
         const bool selected = isNoteSelected (note.info.state);
 
         const float velNorm = (float) juce::jlimit (1, 127, note.info.velocity) / 127.0f;
-        auto base = juce::Colour::fromHSV (juce::jmap (velNorm, 0.62f, 0.02f),
-                                           0.75f, juce::jmap (velNorm, 0.55f, 0.96f), 1.0f);
+        auto base = juce::Colour (0xFF5E4316).interpolatedWith (juce::Colour (0xFFF0C875), velNorm);
         if (selected)
-            base = base.interpolatedWith (juce::Colour (0xFFFFD469), 0.45f);
+            base = base.interpolatedWith (juce::Colour (0xFFFFE6AE), 0.4f);
 
         g.setColour (base);
         g.fillRect (bounds);
-        g.setColour (juce::Colours::black.withAlpha (0.6f));
+        g.setColour (juce::Colour (0xFF2A1C09).withAlpha (0.9f));
         g.drawRect (bounds, selected ? 2 : 1);
     }
 }
@@ -711,7 +710,7 @@ void PianoRollComponent::drawSustainLane (juce::Graphics& g, juce::Rectangle<int
             const float height = (float) juce::jlimit (0, area.getHeight(), (int) std::round ((lastValue / 127.0) * area.getHeight()));
             const int y = baseY - (int) height;
 
-            g.setColour (lastValue >= 64 ? juce::Colour (0xFF2EC27E) : juce::Colour (0xFF3A3F46));
+            g.setColour (lastValue >= 64 ? juce::Colour (0xFF7A5A22) : juce::Colour (0xFF3A2F1A));
             g.fillRect (juce::Rectangle<int> (x1, y, juce::jmax (1, x2 - x1), (int) height));
         }
 
@@ -725,7 +724,7 @@ void PianoRollComponent::drawSustainLane (juce::Graphics& g, juce::Rectangle<int
         const int x2 = (int) ((visibleEnd - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
         const float height = (float) juce::jlimit (0, area.getHeight(), (int) std::round ((lastValue / 127.0) * area.getHeight()));
         const int y = baseY - (int) height;
-        g.setColour (lastValue >= 64 ? juce::Colour (0xFF2EC27E) : juce::Colour (0xFF3A3F46));
+        g.setColour (lastValue >= 64 ? juce::Colour (0xFF7A5A22) : juce::Colour (0xFF3A2F1A));
         g.fillRect (juce::Rectangle<int> (x1, y, juce::jmax (1, x2 - x1), (int) height));
     }
 

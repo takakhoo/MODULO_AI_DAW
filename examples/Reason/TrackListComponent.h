@@ -12,6 +12,7 @@ public:
     void setTracks (const juce::StringArray& trackNames);
     void setTrackInstrumentNames (const juce::StringArray& instrumentNames);
     void setTrackVolumes (const juce::Array<float>& volumes);
+    void setTrackPans (const juce::Array<float>& pans);
     void setTrackEffectCounts (const juce::Array<int>& counts);
     void setTrackMuteStates (const juce::Array<bool>& muteStates);
     void setTrackSoloStates (const juce::Array<bool>& soloStates);
@@ -30,6 +31,7 @@ public:
     std::function<void (int)> onSelectionChanged;
     std::function<void (int, const juce::String&)> onNameChanged;
     std::function<void (int, float)> onVolumeChanged;
+    std::function<void (int, float)> onPanChanged;
     std::function<void (int)> onInstrumentClicked;
     std::function<void (int)> onFxClicked;
     std::function<void (int, bool)> onMuteChanged;
@@ -47,6 +49,7 @@ private:
     juce::StringArray tracks;
     juce::StringArray instruments;
     juce::Array<float> trackVolumes;
+    juce::Array<float> trackPans;
     juce::Array<int> trackEffectCounts;
     juce::Array<bool> trackMuted;
     juce::Array<bool> trackSoloed;
@@ -54,7 +57,7 @@ private:
 
     int selectedIndex = 0;
     int headerHeight = 54;
-    static constexpr int rowHeight = 92;
+    static constexpr int rowHeight = 104;
     int scrollOffset = 0;
     int visibleHeightOverride = -1;
 };

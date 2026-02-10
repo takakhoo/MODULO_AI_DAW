@@ -867,7 +867,8 @@ void TimelineComponent::drawClip (juce::Graphics& g, const ClipRect& clipRect) c
 
     if (clip.type == SessionController::ClipType::midi)
     {
-        g.setColour (juce::Colour (0xFF4F6FE3));
+        const auto fill = reason::trackcolours::highlight (clip.trackIndex).withMultipliedBrightness (1.15f);
+        g.setColour (fill);
         g.fillRoundedRectangle (bounds.toFloat(), 4.0f);
     }
     else
@@ -876,11 +877,11 @@ void TimelineComponent::drawClip (juce::Graphics& g, const ClipRect& clipRect) c
         g.fillRoundedRectangle (bounds.toFloat(), 4.0f);
     }
 
-    g.setColour (juce::Colour (0xFF121418));
+    g.setColour (reason::trackcolours::accent (clip.trackIndex).withAlpha (0.55f));
     g.drawRoundedRectangle (bounds.toFloat(), 4.0f, 1.0f);
 
     juce::Rectangle<int> iconBounds (bounds.getX() + 6, bounds.getY() + 4, 18, 18);
-    g.setColour (juce::Colour (0xFF101216));
+    g.setColour (reason::trackcolours::base (clip.trackIndex).darker (0.3f));
     g.fillRoundedRectangle (iconBounds.toFloat(), 3.0f);
     g.setColour (juce::Colours::white.withAlpha (0.9f));
     g.drawText (clip.type == SessionController::ClipType::midi ? "M" : "A", iconBounds, juce::Justification::centred);

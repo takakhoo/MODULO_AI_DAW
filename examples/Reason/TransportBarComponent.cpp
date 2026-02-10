@@ -20,17 +20,17 @@ TransportBarComponent::TransportBarComponent()
     playShape.addTriangle (0.15f, 0.1f, 0.9f, 0.5f, 0.15f, 0.9f);
     playButton.setShape (playShape, false, true, false);
     playButton.setBorderSize ({ 2, 2, 2, 2 });
-    playButton.setColours (juce::Colour (0xFF5BC16D),
-                           juce::Colour (0xFF75D98A),
-                           juce::Colour (0xFF3E8C4F));
+    playButton.setColours (juce::Colour (0xFF8A621F),
+                           juce::Colour (0xFFB6842E),
+                           juce::Colour (0xFF5B3D12));
 
     juce::Path stopShape;
     stopShape.addRectangle (0.18f, 0.18f, 0.64f, 0.64f);
     stopButton.setShape (stopShape, false, true, false);
     stopButton.setBorderSize ({ 2, 2, 2, 2 });
-    stopButton.setColours (juce::Colour (0xFFD34A4A),
-                           juce::Colour (0xFFEB5B5B),
-                           juce::Colour (0xFFB23535));
+    stopButton.setColours (juce::Colour (0xFF6A4A18),
+                           juce::Colour (0xFF916523),
+                           juce::Colour (0xFF4B320E));
 
     juce::Path recordShape;
     recordShape.addEllipse (0.15f, 0.15f, 0.7f, 0.7f);
@@ -39,14 +39,52 @@ TransportBarComponent::TransportBarComponent()
     recordButton.setColours (juce::Colour (0xFFD94848),
                              juce::Colour (0xFFFF5A5A),
                              juce::Colour (0xFFB02E2E));
-    styleActionButton (fileButton, juce::Colour (0xFF45505C));
-    styleActionButton (chordsButton, juce::Colour (0xFF586E84));
-    styleActionButton (metronomeButton, juce::Colour (0xFF4C6540));
-    styleActionButton (midiInputButton, juce::Colour (0xFF4E5E70));
-    styleActionButton (settingsButton, juce::Colour (0xFF45505C));
+    styleActionButton (fileButton, juce::Colour (0xFF6B4A18));
+    styleActionButton (chordsButton, juce::Colour (0xFF8B6428));
+    styleActionButton (midiInputButton, juce::Colour (0xFF7A5A22));
 
-    for (auto* button : { &fileButton, &chordsButton, &metronomeButton, &midiInputButton, &settingsButton })
+    for (auto* button : { &fileButton, &chordsButton, &midiInputButton })
         button->setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+    chordsButton.setButtonText ("   AI Generate Chords");
+    chordsButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFF2B1905));
+    chordsButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFFD9A84D));
+    chordsButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFFE9C37A));
+    chordsIcon = juce::ImageFileFormat::loadFrom (BinaryData::piano_16822471_png, BinaryData::piano_16822471_pngSize);
+
+    if (auto image = juce::ImageFileFormat::loadFrom (BinaryData::metronome_png, BinaryData::metronome_pngSize);
+        image.isValid())
+    {
+        auto normal = std::make_unique<juce::DrawableImage>();
+        normal->setImage (image);
+        auto over = std::make_unique<juce::DrawableImage>();
+        over->setImage (image);
+        over->setOpacity (0.85f);
+        auto down = std::make_unique<juce::DrawableImage>();
+        down->setImage (image);
+        down->setOpacity (0.7f);
+
+        metronomeButton.setImages (normal.get(), over.get(), down.get(), normal.get(), over.get(), down.get());
+    }
+    metronomeButton.setTooltip ("Metronome");
+    metronomeButton.setColour (juce::DrawableButton::backgroundColourId, juce::Colour (0xFFE0B15A));
+    metronomeButton.setColour (juce::DrawableButton::backgroundOnColourId, juce::Colour (0xFFF0C875));
+
+    if (auto image = juce::ImageFileFormat::loadFrom (BinaryData::setting_png, BinaryData::setting_pngSize);
+        image.isValid())
+    {
+        auto normal = std::make_unique<juce::DrawableImage>();
+        normal->setImage (image);
+        auto over = std::make_unique<juce::DrawableImage>();
+        over->setImage (image);
+        over->setOpacity (0.85f);
+        auto down = std::make_unique<juce::DrawableImage>();
+        down->setImage (image);
+        down->setOpacity (0.7f);
+        settingsButton.setImages (normal.get(), over.get(), down.get(), normal.get(), over.get(), down.get());
+    }
+    settingsButton.setTooltip ("Settings");
+    settingsButton.setColour (juce::DrawableButton::backgroundColourId, juce::Colour (0xFFE0B15A));
+    settingsButton.setColour (juce::DrawableButton::backgroundOnColourId, juce::Colour (0xFFF0C875));
 
     playButton.onClick = [this]
     {
@@ -103,16 +141,16 @@ TransportBarComponent::TransportBarComponent()
     tempoLabel.setJustificationType (juce::Justification::centred);
     timeSigLabel.setJustificationType (juce::Justification::centred);
     keyLabel.setJustificationType (juce::Justification::centred);
-    timeLabel.setFont (juce::FontOptions (21.0f, juce::Font::bold));
-    barsLabel.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    tempoLabel.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    timeSigLabel.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    keyLabel.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    timeLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFE7F6FF));
-    barsLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFA9C7D9));
-    tempoLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFCDE8FF));
-    timeSigLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFCDE8FF));
-    keyLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFCDE8FF));
+    timeLabel.setFont (juce::FontOptions (25.0f, juce::Font::bold));
+    barsLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    tempoLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    timeSigLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    keyLabel.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    timeLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFFFE8B3));
+    barsLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFD8B87A));
+    tempoLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFFFE0A0));
+    timeSigLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFFFE0A0));
+    keyLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFFFE0A0));
     tempoLabel.setInterceptsMouseClicks (true, true);
     timeSigLabel.setInterceptsMouseClicks (true, true);
     keyLabel.setInterceptsMouseClicks (true, true);
@@ -217,18 +255,14 @@ void TransportBarComponent::setMidiInputText (const juce::String& text)
 void TransportBarComponent::setMetronomeActive (bool shouldShowActive)
 {
     metronomeButton.setToggleState (shouldShowActive, juce::dontSendNotification);
-    const auto baseColour = juce::Colour (0xFF3B4C2A);
-    const auto colour = shouldShowActive ? baseColour.withMultipliedBrightness (1.2f)
-                                         : baseColour.withMultipliedBrightness (0.8f);
-    metronomeButton.setColour (juce::TextButton::buttonColourId, colour);
-    metronomeButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+    repaint (metronomeButton.getBounds().expanded (4));
 }
 
 void TransportBarComponent::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds();
-    auto top = juce::Colour (0xFF3A434D);
-    auto bottom = juce::Colour (0xFF1A2028);
+    auto top = juce::Colour (0xFFFFE2A3);
+    auto bottom = juce::Colour (0xFFB8832E);
     g.setGradientFill (juce::ColourGradient (top, 0.0f, 0.0f, bottom, 0.0f, (float) r.getBottom(), false));
     g.fillRect (r);
 
@@ -237,40 +271,72 @@ void TransportBarComponent::paint (juce::Graphics& g)
         auto well = bounds.expanded (2, 2).toFloat();
         g.setColour (juce::Colours::black.withAlpha (0.35f));
         g.fillRoundedRectangle (well.translated (0.0f, 1.5f), 6.0f);
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xFF4E5966), well.getX(), well.getY(),
-                                                 juce::Colour (0xFF29313B), well.getX(), well.getBottom(), false));
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xFFF5D491), well.getX(), well.getY(),
+                                                 juce::Colour (0xFFC18A34), well.getX(), well.getBottom(), false));
         g.fillRoundedRectangle (well, 6.0f);
-        g.setColour (juce::Colours::white.withAlpha (0.2f));
+        g.setColour (juce::Colour (0xFF7A511A).withAlpha (0.55f));
         g.drawRoundedRectangle (well, 6.0f, 1.0f);
     };
 
     for (auto* b : { (juce::Component*) &playButton, (juce::Component*) &stopButton, (juce::Component*) &recordButton,
                      (juce::Component*) &fileButton,
-                     (juce::Component*) &chordsButton, (juce::Component*) &metronomeButton, (juce::Component*) &midiInputButton,
+                     (juce::Component*) &metronomeButton, (juce::Component*) &midiInputButton,
                      (juce::Component*) &settingsButton })
         drawButtonWell (b->getBounds());
+
+    // Blend Generate Chords into the metallic bar: softer fill, minimal border.
+    const auto chordBounds = chordsButton.getBounds().toFloat();
+    g.setColour (juce::Colour (0x99E1B45E));
+    g.fillRoundedRectangle (chordBounds.expanded (1.0f, 1.0f), 6.0f);
+    g.setColour (juce::Colour (0x554B2F0C));
+    g.drawRoundedRectangle (chordBounds.expanded (1.0f, 1.0f), 6.0f, 0.8f);
+
+    if (chordsIcon.isValid())
+    {
+        auto iconArea = chordsButton.getBounds().reduced (6, 6).removeFromLeft (16);
+        g.drawImageWithin (chordsIcon, iconArea.getX(), iconArea.getY(), iconArea.getWidth(), iconArea.getHeight(),
+                           juce::RectanglePlacement::centred);
+    }
+
+    if (metronomeButton.getToggleState())
+    {
+        const auto mb = metronomeButton.getBounds().toFloat().expanded (1.0f);
+        g.setColour (juce::Colour (0xCC5A3A10));
+        g.drawRoundedRectangle (mb, 6.0f, 1.5f);
+    }
 
     const auto panel = displayPanelBounds.toFloat();
     g.setColour (juce::Colours::black.withAlpha (0.35f));
     g.fillRoundedRectangle (panel.translated (0.0f, 2.0f), 8.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xFF0D2A3A), panel.getX(), panel.getY(),
-                                             juce::Colour (0xFF0A1824), panel.getX(), panel.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xFF3A2A12), panel.getX(), panel.getY(),
+                                             juce::Colour (0xFF171007), panel.getX(), panel.getBottom(), false));
     g.fillRoundedRectangle (panel, 8.0f);
-    g.setColour (juce::Colour (0x884FE6FF));
-    g.drawRoundedRectangle (panel, 8.0f, 1.5f);
+    const auto panelBorder = recordActive && recordBlinkOn ? juce::Colour (0xCCEAC57A)
+                                                           : juce::Colour (0x88E0B15A);
+    g.setColour (panelBorder);
+    g.drawRoundedRectangle (panel, 8.0f, recordActive ? 2.0f : 1.5f);
+
+    if (! moduloBounds.isEmpty())
+    {
+        g.setFont (juce::FontOptions (46.0f, juce::Font::bold));
+        g.setColour (juce::Colour (0xFF5A3B12).withAlpha (0.35f));
+        g.drawText ("MODULO", moduloBounds.translated (0, 2), juce::Justification::centred, true);
+        g.setColour (juce::Colour (0xFFFFE6AE));
+        g.drawText ("MODULO", moduloBounds, juce::Justification::centred, true);
+    }
 
     if (recordActive)
     {
-        const float cx = (float) recordButton.getRight() + 10.0f;
+        const float cx = ((float) recordButton.getRight() + (float) displayPanelBounds.getX()) * 0.5f;
         const float cy = (float) recordButton.getBounds().getCentreY();
         const auto light = recordBlinkOn ? juce::Colour (0xFFFF4D4D) : juce::Colour (0xFF4D1B1B);
         g.setColour (light.withAlpha (0.25f));
-        g.fillEllipse (cx - 7.0f, cy - 7.0f, 14.0f, 14.0f);
+        g.fillEllipse (cx - 8.0f, cy - 8.0f, 16.0f, 16.0f);
         g.setColour (light);
-        g.fillEllipse (cx - 4.0f, cy - 4.0f, 8.0f, 8.0f);
+        g.fillEllipse (cx - 4.5f, cy - 4.5f, 9.0f, 9.0f);
     }
 
-    g.setColour (juce::Colour (0xFF2A2C31));
+    g.setColour (juce::Colour (0xFF6E4817));
     g.fillRect (r.removeFromBottom (1));
 }
 
@@ -278,41 +344,72 @@ void TransportBarComponent::resized()
 {
     auto area = getLocalBounds().reduced (8, 6);
     const int laneHeight = area.getHeight();
-    const int gap = 6;
+    const int buttonHeight = juce::jmax (30, laneHeight - 12);
+    const int buttonY = area.getY() + (laneHeight - buttonHeight) / 2;
+    const int gap = 8;
+
+    int fileW = 66;
+    int chordsW = 170;
+    int midiW = 148;
+    int settingsW = 34;
 
     int leftX = area.getX();
-    auto placeLeft = [&leftX, &area, laneHeight] (juce::Component& c, int width)
-    {
-        c.setBounds (leftX, area.getY(), width, laneHeight);
-        leftX += width + gap;
-    };
-
-    const int transportButtonW = 34;
-    placeLeft (playButton, transportButtonW);
-    placeLeft (stopButton, transportButtonW);
-    placeLeft (recordButton, transportButtonW + 2);
-    placeLeft (fileButton, 66);
-    placeLeft (chordsButton, 150);
-
     int rightX = area.getRight();
-    auto placeRight = [&rightX, &area, laneHeight] (juce::Component& c, int width)
+
+    fileButton.setBounds (leftX, buttonY, fileW, buttonHeight);
+    leftX += fileW + gap;
+    chordsButton.setBounds (leftX, buttonY, chordsW, buttonHeight);
+    leftX += chordsW + gap;
+
+    rightX -= settingsW;
+    settingsButton.setBounds (rightX, buttonY, settingsW, buttonHeight);
+    rightX -= gap;
+    rightX -= midiW;
+    midiInputButton.setBounds (rightX, buttonY, midiW, buttonHeight);
+    rightX -= gap;
+
+    const int playW = 34;
+    const int stopW = 34;
+    const int recordW = 36;
+    const int transportGroupW = playW + gap + stopW + gap + recordW;
+    int metronomeW = 34;
+
+    const int centerLeftLimit = leftX + transportGroupW + gap;
+    const int centerRightLimit = rightX - (metronomeW + gap);
+    const int maxCenterWidth = juce::jmax (0, centerRightLimit - centerLeftLimit);
+    int centerWidth = juce::jmin (520, maxCenterWidth);
+
+    if (centerWidth < 180)
     {
-        rightX -= width;
-        c.setBounds (rightX, area.getY(), width, laneHeight);
-        rightX -= gap;
-    };
+        const int minMetro = 30;
+        const int shrink = juce::jmin (metronomeW - minMetro, 180 - centerWidth);
+        metronomeW -= shrink;
+        const int recenteredRightLimit = rightX - (metronomeW + gap);
+        centerWidth = juce::jmin (520, juce::jmax (0, recenteredRightLimit - centerLeftLimit));
+    }
 
-    placeRight (settingsButton, 92);
-    placeRight (midiInputButton, 148);
-    placeRight (metronomeButton, 104);
-
-    const int centerLeft = leftX + 8;
-    const int centerRight = rightX - 8;
-    const int centerWidth = juce::jmax (0, centerRight - centerLeft);
-    auto center = juce::Rectangle<int> (centerLeft, area.getY(), centerWidth, laneHeight);
+    centerWidth = juce::jmax (100, centerWidth);
+    auto center = juce::Rectangle<int> (0, area.getY(), centerWidth, laneHeight)
+                      .withCentre (area.getCentre());
+    center.setX (juce::jlimit (centerLeftLimit, juce::jmax (centerLeftLimit, centerRightLimit - centerWidth), center.getX()));
     displayPanelBounds = center;
 
-    auto panel = center.reduced (10, 5);
+    int transportRight = center.getX() - gap;
+    recordButton.setBounds (transportRight - recordW, buttonY, recordW, buttonHeight);
+    transportRight -= recordW + gap;
+    stopButton.setBounds (transportRight - stopW, buttonY, stopW, buttonHeight);
+    transportRight -= stopW + gap;
+    playButton.setBounds (transportRight - playW, buttonY, playW, buttonHeight);
+
+    const int metroX = center.getRight() + gap;
+    const int metroMaxW = juce::jmax (0, rightX - metroX);
+    metronomeButton.setBounds (metroX, buttonY, juce::jmax (0, juce::jmin (metronomeW, metroMaxW)), buttonHeight);
+
+    const int moduloX = chordsButton.getRight() + gap;
+    const int moduloW = juce::jmax (0, playButton.getX() - gap - moduloX);
+    moduloBounds = juce::Rectangle<int> (moduloX, buttonY, moduloW, buttonHeight);
+
+    auto panel = center.reduced (8, 3);
     auto topRow = panel.removeFromTop ((int) (panel.getHeight() * 0.58f));
     timeLabel.setBounds (topRow);
 

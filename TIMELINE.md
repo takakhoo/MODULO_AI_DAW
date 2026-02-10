@@ -1974,3 +1974,583 @@ python -m realchords.realjam.server --port 8080
 
 ### Validation
 - Build successful with sustain-automation generation enabled.
+
+## 2026-02-10 03:20 - Chord-inspector architecture shift (from popups to persistent workshop controls)
+
+### Product direction change
+- The chord workflow was moved away from transient popup menus toward a persistent "workshop" model:
+  - Click chord cell once to select context.
+  - Apply all edits from fixed controls in the lower inspector area.
+- This was done for speed, visibility, and reduced click depth while iterating harmony ideas.
+
+### Implemented
+1. **Persistent chord editing controls**
+   - Replaced popup action menus with always-visible action buttons:
+     - `Block`, `Arpeggio`, `Double Time`, `Delete`, `Octave Up`, `Octave Down`, `Inversion Up`, `Inversion Down`.
+   - Replaced popup note-name chooser with always-visible root/quality selector buttons.
+
+2. **Cell selection model**
+   - Added explicit selected-cell state (`measure`, `beat`) in inspector.
+   - Highlighted selected cell in grid.
+   - Wired selected cell as the target for all chord edit actions.
+
+3. **Playback-follow behavior**
+   - Active-playing chord cell remains highlighted during transport playback.
+   - Inspector can auto-scroll to active row.
+
+### Mistakes / regressions found
+- Initial transition still had mixed interaction assumptions (popup-era assumptions in code paths) and required follow-up wiring to ensure all operations correctly targeted the selected cell.
+
+### Fixes
+- Unified callback flow:
+  - UI actions emit `(measure, beat, action)` to main component.
+  - Main component maps to `SessionController::ChordEditAction`.
+  - Session applies edit to exact cell span.
+
+### Files changed
+- `examples/Reason/ChordInspectorComponent.h/.cpp`
+- `examples/Reason/ReasonMainComponent.cpp`
+- `examples/Reason/SessionController.h/.cpp`
+
+### Validation
+- Built and smoke-tested action flow in-place without popup dependency.
+
+---
+
+## 2026-02-10 03:30 - Full black/gold visual pass + transport lane stabilization
+
+### Goals
+- Push consistent black/gold styling across transport, menus, tracks, and inspectors.
+- Keep transport controls readable and non-overlapping under changing window widths.
+
+### Implemented
+1. **Top bar visual redesign**
+   - Metallic gold gradient background.
+   - Brighter button wells and panel accents for icon visibility.
+   - Transport display panel made taller with stronger recording pulse.
+
+2. **Transport placement constraints**
+   - Enforced left/center/right lane layout:
+     - Left: `File`, `AI Generate Chords`
+     - Center-left: `Play`, `Stop`, `Record`
+     - Center: time/BPM/key display
+     - Center-right: metronome
+     - Right: MIDI / Settings
+   - Added controlled spacing between buttons.
+   - Ensured top bar spans full window width.
+
+3. **Icon integration**
+   - Metronome moved to icon button.
+   - Settings moved to gear icon + label treatment.
+   - Chord button uses piano icon and renamed to `AI Generate Chords`.
+
+4. **Menu theming**
+   - Applied popup menu colors globally via look-and-feel defaults.
+
+### Mistakes / regressions found
+1. **Control overlap and clipping in transport**
+   - Root cause: incremental layout edits without strict lane budgets caused collisions at certain widths.
+2. **Metronome icon not visible unless pressed**
+   - Root cause: icon contrast against darker background and button state rendering.
+3. **Compile failure in popup menu theming**
+   - Error: `no member named 'setColour' in 'juce::PopupMenu'`.
+   - Root cause: attempted per-menu API that is unsupported in this JUCE version.
+
+### Fixes
+1. Rewrote `TransportBarComponent::resized()` with deterministic lane math and spacing.
+2. Brightened gold bar + adjusted icon button rendering so black assets are visible at rest.
+3. Removed invalid per-menu color calls and set theme on default look-and-feel globally.
+
+### Files changed
+- `examples/Reason/TransportBarComponent.h/.cpp`
+- `examples/Reason/ReasonMainComponent.cpp`
+- `examples/Reason/CMakeLists.txt` (binary data for icon assets)
+
+### Validation
+- Multiple rebuilds while tuning layout; final build successful with no overlap in targeted configurations.
+
+---
+
+## 2026-02-10 03:40 - Track strip ergonomics: gain readability, pan control, and color coherence
+
+### Goals
+- Improve mix-control readability and reduce ambiguity in per-track controls.
+- Add real panning control with clear visual semantics.
+
+### Implemented
+1. **Track row structure update**
+   - Top row reserved for track title.
+   - Mute/Solo/FX moved down.
+   - Gain label moved left of slider; gain value label moved right.
+
+2. **Pan control**
+   - Added per-track rotary pan knob + label.
+   - Added callback wiring from strip -> list -> session.
+   - Added backend get/set pan methods using `VolumeAndPanPlugin`.
+
+3. **Custom pan look**
+   - Implemented custom `PanKnobLookAndFeel`:
+     - Left stop around 7 o'clock.
+     - Center around 2 o'clock visual reference.
+     - Right stop around 5 o'clock.
+
+4. **Color pass**
+   - Gain sliders restyled to silver.
+   - Track body + timeline clip fills unified via gold shade palette.
+
+### Mistakes / regressions found
+- Pan label appeared without a real knob in one pass.
+  - Root cause: UI declaration present but full component/layout/render wiring incomplete.
+
+### Fixes
+- Completed the full chain:
+  - Component creation, bounds, look-and-feel, callback propagation, and backend pan persistence.
+
+### Files changed
+- `examples/Reason/TrackStripComponent.h/.cpp`
+- `examples/Reason/TrackListComponent.h/.cpp`
+- `examples/Reason/SessionController.h/.cpp`
+- `examples/Reason/TrackColors.h`
+- `examples/Reason/TimelineComponent.cpp` (color alignment in clip drawing)
+
+### Validation
+- Build successful; pan changes now audibly and visually map to knob movement.
+
+---
+
+## 2026-02-10 03:50 - Chord-grid semantics (Bar column + beat cells + empty-cell insertion)
+
+### Goals
+- Make chord inspector read musically by bar/beat instead of ad-hoc row labels.
+- Support adding harmony by clicking empty beat cells.
+
+### Implemented
+1. **Bar-based labeling**
+   - Replaced `M1/M2/...` style with `Bar` header and numeric rows `1,2,3...`.
+
+2. **Beat-subdivided rows**
+   - Each row represents a measure.
+   - Each beat is a distinct chord cell.
+
+3. **Empty-cell chord creation**
+   - Added callback for empty target cell chord insert.
+   - Backend `setChordAtCell` writes chord label + MIDI notes at specific bar/beat.
+
+### Mistakes / regressions found
+- Initial quality/root edits targeted mostly empty-cell insertion use case and needed follow-up to support replacing existing cell harmonies seamlessly.
+
+### Fixes
+- Extended selected-cell edit flow so existing cells can be rewritten by the same controls.
+
+### Files changed
+- `examples/Reason/ChordInspectorComponent.h/.cpp`
+- `examples/Reason/ReasonMainComponent.cpp`
+- `examples/Reason/SessionController.h/.cpp`
+
+### Validation
+- Build successful; empty and occupied cell workflows now both supported.
+
+---
+
+## 2026-02-10 04:05 - Keyboard workflow additions and safety behaviors
+
+### Implemented
+1. **Recording shortcut semantics**
+   - `R` changed to start-record only (no toggle-off side effects).
+
+2. **Delete chord by key**
+   - `Delete`/`Backspace` on selected chord cell removes that cell chord.
+
+3. **Loop duplication**
+   - `L` duplicates selected MIDI clip 5 times for rapid loop sketching.
+
+### Mistakes / regressions found
+- None critical in final behavior; changes were additive and confirmed through rebuild/test loops.
+
+### Files changed
+- `examples/Reason/ReasonMainComponent.cpp`
+- `examples/Reason/ChordInspectorComponent.h/.cpp`
+
+### Validation
+- Build successful.
+
+---
+
+## 2026-02-10 04:20 - Chord-engine correctness fixes (quality parsing + inversion behavior)
+
+### Issue A: Major 7th quality parsed incorrectly
+
+#### Symptom
+- `maj7` chords could be interpreted as minor because parsing checked `"m"` before `"maj"`.
+
+#### Root cause
+- Order-dependent `startsWith` branch in `chordSymbolToPitches`.
+
+#### Fix
+- Reordered quality checks so `"maj"` is evaluated before `"m"`.
+
+#### Result
+- `Cmaj7` now resolves to tonic + major 3rd + 5th + major 7th.
+
+---
+
+### Issue B: Inversion on blocked chords dropped notes; arpeggio inversions ineffective
+
+#### Symptom
+- First inversion operation sometimes appeared to remove a note.
+- Arpeggiated cells did not consistently invert as expected.
+
+#### Root cause
+- Previous inversion flow rebuilt from transformed pitch sets that could alter cardinality/shape.
+
+#### Fix
+- Reworked inversion action to operate on existing note events while preserving note count:
+  - Move lowest note up an octave for inversion-up.
+  - Move highest note down an octave for inversion-down.
+- Kept timing/shape characteristics intact for both blocked and arpeggiated cells.
+
+#### Result
+- Inversions now behave musically and consistently across cell styles.
+
+### Files changed
+- `examples/Reason/SessionController.cpp`
+
+### Validation
+- Build successful after parsing/inversion fixes.
+
+---
+
+## 2026-02-10 04:35 - Chord workshop layout refactor (roots on top, semitone arrows left, inline MIDI preview)
+
+### Goals
+- Improve legibility and musical feedback in the chord workshop.
+
+### Implemented
+1. **Root controls repositioned**
+   - Root note buttons moved to top row(s) for larger, easier targets.
+
+2. **Dedicated semitone controls**
+   - Left-side controls changed to dedicated transpose actions (per selected cell).
+   - Added edit actions:
+     - `semitoneUp`
+     - `semitoneDown`
+   - Mapped through UI -> main component -> session backend.
+
+3. **Inline static MIDI preview**
+   - Added preview panel between chord grid and designer controls.
+   - Added backend extraction for notes in selected cell span:
+     - `SessionController::getChordCellPreviewNotesForTrack(...)`
+   - Draws note bars for blocked or arpeggiated content based on real MIDI in that cell.
+
+### Mistakes / regressions found
+1. **Comparator warning**
+   - Float inequality comparison warning surfaced in preview-note sort code.
+   - Fix: changed comparator branching to ordered `<` / `>` checks.
+2. **Compile mismatch while wiring UI indexing**
+   - Attempted `OwnedArray` helper function unavailable in this environment.
+   - Fix: replaced with explicit index loop.
+
+### Files changed
+- `examples/Reason/ChordInspectorComponent.h/.cpp`
+- `examples/Reason/ReasonMainComponent.cpp`
+- `examples/Reason/SessionController.h/.cpp`
+
+### Validation
+- Build successful after preview + transpose integration.
+- No linter errors on modified files.
+
+---
+
+## 2026-02-10 04:50 - Existing-chord root editing + duration-preservation fix
+
+### Issue A: Root-change editing not applying to occupied cells
+
+#### Symptom
+- UI allowed many transformations but changing root (e.g., `D -> G`) on an already-filled cell was inconsistent.
+
+#### Fix
+- Root button clicks now apply immediately to selected occupied cell using current quality context.
+- Cell selection now parses existing symbol and initializes selected root/quality state.
+
+---
+
+### Issue B: Quality change could shorten sustained blocked chord
+
+#### Symptom
+- Example: 2-beat blocked chord changed to `7th` became 1 beat.
+
+#### Root cause
+- `setChordAtCell` had a fallback path that could default to one-beat rewrite.
+
+#### Fix
+- Rewrote duration inference:
+  1. Determine target cell bounds (start -> next label / clip end).
+  2. Measure currently occupied note span inside that cell.
+  3. Rewrite replacement chord using occupied span.
+  4. Use fallback beat only when no prior occupancy exists.
+
+#### Result
+- Quality/root replacement preserves original sustain length.
+
+### Files changed
+- `examples/Reason/ChordInspectorComponent.h/.cpp`
+- `examples/Reason/SessionController.cpp`
+
+### Validation
+- Build successful after duration-preservation patch.
+
+---
+
+## 2026-02-10 05:05 - Live chord-preview enhancement pass (labels, larger panel, playback-follow, enharmonics)
+
+### Goals
+- Make preview readable and useful while composing in motion.
+
+### Implemented
+1. **Note labels on bars**
+   - Each preview MIDI note now shows note name + octave.
+   - Black keys shown enharmonically (e.g., `C#/Db4`).
+
+2. **Larger preview area**
+   - Increased preview height budget for legibility and live reading.
+
+3. **Playback-live behavior**
+   - Preview now follows currently playing chord cell during transport playback (not only manual selection).
+   - Displays contextual text indicating selected/live bar-beat target.
+
+4. **Current chord text**
+   - Preview header now shows currently targeted chord symbol.
+
+5. **Root selector enharmonics**
+   - Root buttons for black notes now display dual naming (sharp/flat).
+
+6. **Transpose button glyphs**
+   - Semitone controls relabeled with musical symbols:
+     - Up: `♯`
+     - Down: `♭`
+
+### Mistakes / fixes during implementation
+- Initial large patch had context mismatch during apply (file shifted since previous edits).
+- Resolved by re-reading full file and applying targeted patches against current content.
+
+### Files changed
+- `examples/Reason/ChordInspectorComponent.h/.cpp`
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: successful build.
+- Lint status: no linter errors in edited chord inspector files.
+
+---
+
+## Consolidated mistakes-and-fixes ledger (since previous TIMELINE update)
+
+### 1) UI layout regressions
+- **Problem:** transport overlap / spacing instability while reorganizing lanes.
+- **Fix:** deterministic left/center/right layout math; explicit width budgets and gaps.
+
+### 2) Theming API mismatch
+- **Problem:** compile error using unsupported per-menu `setColour`.
+- **Fix:** moved popup theming to global look-and-feel defaults.
+
+### 3) Chord parsing correctness
+- **Problem:** `maj7` parsed as minor in some paths.
+- **Fix:** quality detection order corrected (`maj` before `m`).
+
+### 4) Inversion correctness
+- **Problem:** note disappearance and weak behavior on arpeggios.
+- **Fix:** inversion now moves boundary notes on existing events, preserving note count.
+
+### 5) Missing/partial pan integration
+- **Problem:** pan label present before full knob pipeline.
+- **Fix:** completed UI + callback + backend pan parameter plumbing.
+
+### 6) Chord replacement duration drift
+- **Problem:** quality changes could shorten long blocked chords.
+- **Fix:** rewrite length derived from real occupied span in target cell.
+
+### 7) Live preview implementation friction
+- **Problem:** patch context mismatch + one unavailable `OwnedArray` helper.
+- **Fix:** file re-read + explicit index loops + rebuild verification.
+
+---
+
+## 2026-02-10 05:20 - Chord workshop visual hierarchy pass (preview scaling + banner integration)
+
+### Goals
+- Increase readability of harmonic feedback while keeping right-panel workflow compact.
+- Eliminate visually "dead" space between chord grid and workshop controls.
+
+### Implemented
+1. **Preview scaling**
+   - Increased `Chord MIDI Preview` height budget significantly so note bars + labels remain legible during edits.
+
+2. **Spacer-to-information conversion**
+   - Converted previously empty gap area into a styled banner strip.
+   - Added all-caps title text: `CHORD WORKSHOP`.
+   - Matched banner palette to surrounding black/gold inspector theme for continuity.
+
+3. **Panel hierarchy tuning**
+   - Rebalanced chord-list, banner, preview, and control areas so the preview receives more visual priority while preserving button usability.
+
+### Decision rationale
+- Instead of adding more controls, the decision was to improve cognitive legibility first (clear labeling and stronger section hierarchy), because this directly lowers editing errors during rapid chord experimentation.
+
+### Files changed
+- `examples/Reason/ChordInspectorComponent.h/.cpp`
+
+### Validation
+- Build successful after layout rebalance.
+
+---
+
+## 2026-02-10 05:30 - Transport identity + data-display emphasis pass
+
+### Goals
+- Strengthen product identity at runtime.
+- Make timing/context display visually dominant over surrounding transport buttons.
+
+### Implemented
+1. **Brand treatment**
+   - Added `MODULO` text in the central lane between `AI Generate Chords` and play transport.
+
+2. **Data panel emphasis**
+   - Increased center display typography (time + bars + tempo + time signature + key).
+   - Reworked control heights so display panel is taller than adjacent buttons.
+
+3. **Button/display balance**
+   - Reduced effective button height while keeping panel full-height presence to improve glance readability.
+
+### Mistake/regression encountered
+- Initial `MODULO` rendering looked like a button/chip due to boxed background styling.
+
+### Fix
+- Removed boxed treatment entirely.
+- Rendered `MODULO` directly on the metallic gold bar with stronger type scale and subtle shadow only.
+- Increased size significantly to satisfy visibility target.
+
+### Decision rationale
+- Branding should behave as environmental identity, not an affordance. Removing "button-like" framing avoids false click expectation and keeps interaction semantics clear.
+
+### Files changed
+- `examples/Reason/TransportBarComponent.h/.cpp`
+
+### Validation
+- Build successful after both initial and corrected brand-render passes.
+
+---
+
+## 2026-02-10 05:40 - Piano-roll gold unification (notes + sustain lane)
+
+### Goals
+- Remove residual non-theme colors in core edit surfaces.
+- Keep velocity legibility while aligning with black/gold visual language.
+
+### Implemented
+1. **Velocity-aware gold notes**
+   - Replaced rainbow/HSV mapping with gold-spectrum mapping from dark to bright by velocity.
+   - Preserved selected-note emphasis via lighter-gold interpolation.
+
+2. **Sustain lane recolor**
+   - Replaced green CC64 "on" blocks with darker gold shades.
+   - Kept "off"/neutral sustain background distinct but theme-consistent.
+
+### Decision rationale
+- Maintaining velocity readability does not require multi-hue coloring; intensity variation within a single harmonic palette is sufficient and visually coherent with the product direction.
+
+### Files changed
+- `examples/Reason/PianoRollComponent.cpp`
+
+### Validation
+- Build successful; no linter errors in modified file.
+
+---
+
+## 2026-02-10 05:50 - Musical glyph robustness pass for semitone controls
+
+### Problem observed
+- Even after symbol adoption intent, transpose controls could render fallback dots/squares on some runs due to text path ambiguity.
+
+### Fix
+- Explicitly set semitone button text in constructor using the exact Unicode glyphs:
+  - Up: `♯`
+  - Down: `♭`
+- Added clear tooltips (`Sharp` / `Flat`) for semantic reinforcement.
+
+### Decision rationale
+- Explicit glyph assignment is more robust than relying on inherited/default text initialization when cross-font behavior can vary.
+
+### Files changed
+- `examples/Reason/ChordInspectorComponent.cpp`
+
+### Validation
+- Build successful after glyph-robustness patch.
+
+---
+
+## 2026-02-10 06:00 - Chord edit logic fix: Double Time preserving arpeggio style
+
+### Issue observed
+- Applying `Double Time` to an arpeggiated cell collapsed output into blocked voicings.
+
+### Root cause
+- The double-time branch treated target material as pitch set only (blocked reconstruction), ignoring per-note temporal pattern data already present in the cell.
+
+### Fix implemented
+1. Added style inference in `applyChordEditAction` for the target cell:
+   - Detect whether chord notes are distributed across starts (arpeggio) vs. fully co-started (block).
+
+2. For arpeggiated cells:
+   - Capture existing per-note timing/velocity shape.
+   - Time-compress that pattern into half-cell duration.
+   - Repeat twice across the original cell length (true double-time arpeggio feel).
+
+3. For blocked cells:
+   - Preserve existing blocked double-hit behavior.
+
+### Result
+- `Double Time` now preserves style semantics:
+  - Arpeggio remains arpeggio (faster repeated figure).
+  - Block remains block.
+
+### Files changed
+- `examples/Reason/SessionController.cpp`
+
+### Validation
+- Build successful after arpeggio-preserving double-time fix.
+- No linter errors in modified file.
+
+---
+
+## 2026-02-10 06:10 - Documentation hardening pass (README + timeline completeness)
+
+### Goals
+- Capture the full technical and research narrative after rapid iteration cycle.
+- Improve repository communication of novelty, HCI contribution, and musician-first algorithmic framing.
+
+### README updates
+1. Added `examples/Reason/ScreenView.png` directly below the "Why the Name Modulo" explanation.
+2. Expanded novelty framing beyond generation count:
+   - theory-operable workflow
+   - musician agency in control loop
+   - DAW-native comparative harmonic exploration
+3. Added explicit HCI novelty section centered on Chord Workshop:
+   - persistent controls
+   - bar/beat cell semantics
+   - live contextual feedback
+   - low-friction theory operations
+4. Strengthened AI deep-dive language around hybrid loop:
+   - probabilistic option discovery + deterministic theory refinement.
+
+### Timeline updates
+- Added exhaustive post-05:05 records for:
+  - workshop visual hierarchy
+  - transport identity/display emphasis
+  - piano roll recolor pass
+  - glyph robustness fix
+  - arpeggio-preserving double-time bug fix
+- Included problem statements, root causes, decisions, and validations.
+
+### Files changed
+- `README.md`
+- `TIMELINE.md`

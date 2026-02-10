@@ -37,6 +37,19 @@ void TrackListComponent::setTrackVolumes (const juce::Array<float>& volumes)
     }
 }
 
+void TrackListComponent::setTrackPans (const juce::Array<float>& pans)
+{
+    trackPans = pans;
+    for (int i = 0; i < strips.size(); ++i)
+    {
+        if (auto* strip = strips[i])
+        {
+            const float p = i < trackPans.size() ? trackPans[i] : 0.0f;
+            strip->setPanNormalized (p);
+        }
+    }
+}
+
 void TrackListComponent::setTrackEffectCounts (const juce::Array<int>& counts)
 {
     trackEffectCounts = counts;
@@ -132,19 +145,19 @@ void TrackListComponent::resized()
 
 void TrackListComponent::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xFF1A1C21));
+    g.fillAll (juce::Colour (0xFF14110C));
     if (headerHeight <= 0)
         return;
 
     juce::Rectangle<int> header (0, 0, getWidth(), headerHeight);
-    g.setColour (juce::Colour (0xFF2B2F36));
+    g.setColour (juce::Colour (0xFF3A2B14));
     g.fillRect (header);
 
-    g.setColour (juce::Colour (0xFF363B44));
+    g.setColour (juce::Colour (0xFF5A431D));
     g.drawLine ((float) header.getX(), (float) header.getBottom() - 1.0f,
                 (float) header.getRight(), (float) header.getBottom() - 1.0f);
 
-    g.setColour (juce::Colours::white.withAlpha (0.8f));
+    g.setColour (juce::Colour (0xFFFFE6B3).withAlpha (0.9f));
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
     g.drawText ("Tracks", header.reduced (10, 4), juce::Justification::centredLeft);
 }
@@ -183,6 +196,9 @@ void TrackListComponent::rebuildStrips()
         const float v = i < trackVolumes.size() ? trackVolumes[i] : 0.8f;
         strip->setVolumeNormalized (v);
 
+        const float p = i < trackPans.size() ? trackPans[i] : 0.0f;
+        strip->setPanNormalized (p);
+
         const int effectCount = i < trackEffectCounts.size() ? trackEffectCounts[i] : 0;
         strip->setEffectCount (effectCount);
 
@@ -209,6 +225,12 @@ void TrackListComponent::rebuildStrips()
         {
             if (onVolumeChanged)
                 onVolumeChanged (index, value);
+        };
+
+        strip->onPanChanged = [this] (int index, float value)
+        {
+            if (onPanChanged)
+                onPanChanged (index, value);
         };
 
         strip->onInstrumentClicked = [this] (int index)

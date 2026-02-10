@@ -1,15 +1,6 @@
 #include "TrackStripComponent.h"
 #include "TrackColors.h"
 
-static juce::Colour volumeColourFor (float value)
-{
-    const float v = juce::jlimit (0.0f, 1.0f, value);
-    const float hue = juce::jmap (v, 0.55f, 0.08f);
-    const float sat = juce::jmap (v, 0.35f, 0.7f);
-    const float bright = juce::jmap (v, 0.35f, 0.9f);
-    return juce::Colour::fromHSV (hue, sat, bright, 1.0f);
-}
-
 constexpr float kMinTrackDb = -10.0f;
 constexpr float kMaxTrackDb = 6.0f;
 
@@ -50,6 +41,8 @@ TrackStripComponent::TrackStripComponent (int index)
     addAndMakeVisible (volumeSlider);
     addAndMakeVisible (gainLabel);
     addAndMakeVisible (gainValueLabel);
+    addAndMakeVisible (panSlider);
+    addAndMakeVisible (panLabel);
     addAndMakeVisible (instrumentButton);
     addAndMakeVisible (fxButton);
     addAndMakeVisible (muteButton);
@@ -75,15 +68,14 @@ TrackStripComponent::TrackStripComponent (int index)
     volumeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     volumeSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     volumeSlider.setRange (0.0, 1.0, 0.001);
-    volumeSlider.setColour (juce::Slider::trackColourId, volumeColourFor (0.8f));
-    volumeSlider.setColour (juce::Slider::backgroundColourId, juce::Colour (0xFF20252C));
-    volumeSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFBFEDE4));
+    volumeSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFD9DEE6));
+    volumeSlider.setColour (juce::Slider::backgroundColourId, juce::Colour (0xFF3E444D));
+    volumeSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFF2F5FA));
     volumeSlider.setLookAndFeel (&gainSliderLaf);
     volumeSlider.onValueChange = [this]
     {
         if (onVolumeChanged)
             onVolumeChanged (trackIndex, (float) volumeSlider.getValue());
-        volumeSlider.setColour (juce::Slider::trackColourId, volumeColourFor ((float) volumeSlider.getValue()));
         updateGainReadout ((float) volumeSlider.getValue());
         repaint();
     };
@@ -97,6 +89,28 @@ TrackStripComponent::TrackStripComponent (int index)
     gainValueLabel.setColour (juce::Label::textColourId, juce::Colours::white);
     gainValueLabel.setFont (juce::FontOptions (11.0f, juce::Font::bold));
     updateGainReadout ((float) volumeSlider.getValue());
+
+    panLabel.setText ("Pan", juce::dontSendNotification);
+    panLabel.setJustificationType (juce::Justification::centredLeft);
+    panLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.75f));
+    panLabel.setFont (juce::FontOptions (11.0f, juce::Font::plain));
+
+    panSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    panSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    panSlider.setRange (-1.0, 1.0, 0.001);
+    panSlider.setValue (0.0, juce::dontSendNotification);
+    panSlider.setRotaryParameters (juce::MathConstants<float>::pi * 1.15f,
+                                   juce::MathConstants<float>::pi * 2.95f,
+                                   true);
+    panSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE1E6EE));
+    panSlider.setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour (0xFF4B515A));
+    panSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFF8FAFD));
+    panSlider.setLookAndFeel (&panKnobLaf);
+    panSlider.onValueChange = [this]
+    {
+        if (onPanChanged)
+            onPanChanged (trackIndex, (float) panSlider.getValue());
+    };
 
     instrumentButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF27313C));
     instrumentButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
@@ -144,6 +158,7 @@ TrackStripComponent::TrackStripComponent (int index)
 TrackStripComponent::~TrackStripComponent()
 {
     volumeSlider.setLookAndFeel (nullptr);
+    panSlider.setLookAndFeel (nullptr);
 }
 
 void TrackStripComponent::GainSliderLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
@@ -181,6 +196,47 @@ void TrackStripComponent::GainSliderLookAndFeel::drawLinearSlider (juce::Graphic
                    thumbRadius * 2.0f);
 }
 
+void TrackStripComponent::PanKnobLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
+                                                                float sliderPosProportional, float rotaryStartAngle, float rotaryEndAngle,
+                                                                juce::Slider& slider)
+{
+    juce::ignoreUnused (sliderPosProportional, rotaryStartAngle, rotaryEndAngle);
+
+    auto bounds = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height).reduced (1.5f);
+    const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+    const auto center = bounds.getCentre();
+
+    // Requested behavior:
+    // - left stop  ~7 o'clock
+    // - center     ~2 o'clock
+    // - right stop ~5 o'clock
+    constexpr float leftAngle = juce::MathConstants<float>::pi * (7.0f / 6.0f);   // 210 deg
+    constexpr float centerAngle = juce::MathConstants<float>::pi * (1.0f / 3.0f); // 60 deg
+    constexpr float rightAngle = juce::MathConstants<float>::pi * (5.0f / 6.0f);  // 150 deg
+
+    const float value = (float) slider.getValue();
+    float angle = centerAngle;
+    if (value < 0.0f)
+        angle = juce::jmap (value, -1.0f, 0.0f, leftAngle, centerAngle);
+    else
+        angle = juce::jmap (value, 0.0f, 1.0f, centerAngle, rightAngle);
+
+    g.setColour (juce::Colour (0xFF313741));
+    g.fillEllipse (bounds);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xFFE8ECF3), bounds.getX(), bounds.getY(),
+                                             juce::Colour (0xFFA7AFBB), bounds.getRight(), bounds.getBottom(), false));
+    g.fillEllipse (bounds.reduced (2.0f));
+    g.setColour (juce::Colour (0xFF525964));
+    g.drawEllipse (bounds, 1.2f);
+
+    const float pointerLen = radius * 0.7f;
+    const float pointerThickness = juce::jmax (1.8f, radius * 0.15f);
+    juce::Path pointer;
+    pointer.addRoundedRectangle (-pointerThickness * 0.5f, -pointerLen, pointerThickness, pointerLen, pointerThickness * 0.4f);
+    g.setColour (juce::Colour (0xFF2A3038));
+    g.fillPath (pointer, juce::AffineTransform::rotation (angle).translated (center.x, center.y));
+}
+
 void TrackStripComponent::setTrackName (const juce::String& name)
 {
     nameLabel.setText (name, juce::dontSendNotification);
@@ -209,7 +265,6 @@ void TrackStripComponent::setSelected (bool shouldSelect)
 void TrackStripComponent::setVolumeNormalized (float value)
 {
     volumeSlider.setValue (juce::jlimit (0.0f, 1.0f, value), juce::dontSendNotification);
-    volumeSlider.setColour (juce::Slider::trackColourId, volumeColourFor (value));
     updateGainReadout (value);
 }
 
@@ -226,6 +281,11 @@ void TrackStripComponent::setEffectCount (int count)
         fxButton.setButtonText ("FX");
         fxButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF2A2F3A));
     }
+}
+
+void TrackStripComponent::setPanNormalized (float value)
+{
+    panSlider.setValue (juce::jlimit (-1.0f, 1.0f, value), juce::dontSendNotification);
 }
 
 void TrackStripComponent::setMuted (bool shouldMute)
@@ -290,30 +350,30 @@ void TrackStripComponent::resized()
     auto top = r.removeFromTop (24);
     auto numberArea = top.removeFromLeft (30);
     numberLabel.setBounds (numberArea);
-
-    auto buttons = top.removeFromRight (118);
     nameLabel.setBounds (top);
-    muteButton.setBounds (buttons.removeFromLeft (36).reduced (0, 2));
-    soloButton.setBounds (buttons.removeFromLeft (36).reduced (0, 2));
-    fxButton.setBounds (buttons.removeFromLeft (46).reduced (0, 2));
 
     r.removeFromTop (4);
-    auto instrumentBounds = r.removeFromTop (20);
-    const int instrumentWidth = juce::jmin (instrumentBounds.getWidth(), 110);
-    instrumentButton.setBounds (instrumentBounds.withSizeKeepingCentre (instrumentWidth,
-                                                                        instrumentBounds.getHeight()));
-    r.removeFromTop (4);
+    auto controls = r.removeFromTop (20);
+    auto rightButtons = controls.removeFromRight (124);
+    muteButton.setBounds (rightButtons.removeFromLeft (36).reduced (0, 1));
+    soloButton.setBounds (rightButtons.removeFromLeft (36).reduced (0, 1));
+    fxButton.setBounds (rightButtons.removeFromLeft (52).reduced (0, 1));
 
-    auto gainRow = r.removeFromTop (14);
-    gainLabel.setBounds (gainRow.removeFromLeft (40));
-    gainValueLabel.setBounds (gainRow.removeFromRight (70));
+    const int instrumentWidth = juce::jmin (controls.getWidth(), 118);
+    instrumentButton.setBounds (controls.withSizeKeepingCentre (instrumentWidth, controls.getHeight()));
 
     r.removeFromTop (4);
-    auto sliderBounds = r.removeFromTop (24).reduced (12, 0);
-    const int sliderWidth = juce::jmin (sliderBounds.getWidth(), 120);
-    sliderBounds = sliderBounds.withSizeKeepingCentre (sliderWidth, sliderBounds.getHeight());
-    volumeSlider.setBounds (sliderBounds);
-    gainSliderBounds = sliderBounds;
+    auto gainRow = r.removeFromTop (18);
+    gainLabel.setBounds (gainRow.removeFromLeft (34));
+    gainValueLabel.setBounds (gainRow.removeFromRight (64));
+    volumeSlider.setBounds (gainRow.reduced (2, 0));
+    gainSliderBounds = volumeSlider.getBounds();
+
+    r.removeFromTop (2);
+    auto panRow = r.removeFromTop (34);
+    panLabel.setBounds (panRow.removeFromLeft (34));
+    const int panSize = juce::jmin (32, panRow.getHeight());
+    panSlider.setBounds (panRow.removeFromLeft (panSize).withSizeKeepingCentre (panSize, panSize));
 }
 
 void TrackStripComponent::mouseDown (const juce::MouseEvent&)

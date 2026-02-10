@@ -62,6 +62,7 @@ juce::String getRealchordsStartHint()
 
     return "tools/realchords/.venv/bin/python tools/realchords/realchords_batch_server.py";
 }
+
 }
 
 class ReasonMainComponent::PianoRollResizer : public juce::Component
@@ -110,6 +111,34 @@ public:
     {
         const int delta = event.getScreenX() - startX;
         owner.trackListWidth = juce::jlimit (180, 420, startWidth + delta);
+        owner.resized();
+    }
+
+private:
+    ReasonMainComponent& owner;
+    int startWidth = 0;
+    int startX = 0;
+};
+
+class ReasonMainComponent::InspectorResizer : public juce::Component
+{
+public:
+    explicit InspectorResizer (ReasonMainComponent& ownerRef)
+        : owner (ownerRef)
+    {
+        setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+    }
+
+    void mouseDown (const juce::MouseEvent& event) override
+    {
+        startWidth = owner.inspectorWidth;
+        startX = event.getScreenX();
+    }
+
+    void mouseDrag (const juce::MouseEvent& event) override
+    {
+        const int delta = startX - event.getScreenX();
+        owner.inspectorWidth = juce::jlimit (220, 560, startWidth + delta);
         owner.resized();
     }
 
@@ -224,6 +253,7 @@ ReasonMainComponent::ReasonMainComponent()
     addAndMakeVisible (timeline);
     addAndMakeVisible (chordInspector);
     addAndMakeVisible (fxInspector);
+    addAndMakeVisible (chordInspectorToggleButton);
     addAndMakeVisible (pianoRoll);
     addAndMakeVisible (verticalScrollBar);
 
@@ -235,6 +265,7 @@ ReasonMainComponent::ReasonMainComponent()
     trackList.setTracks (trackNames);
     trackList.setTrackInstrumentNames (session.getTrackInstrumentNames());
     trackList.setTrackVolumes (session.getTrackVolumes());
+    trackList.setTrackPans (session.getTrackPans());
     trackList.setTrackEffectCounts (session.getTrackEffectCounts());
     trackList.setTrackMuteStates (session.getTrackMuteStates());
     trackList.setTrackSoloStates (session.getTrackSoloStates());
@@ -242,6 +273,25 @@ ReasonMainComponent::ReasonMainComponent()
     refreshFxInspector();
     refreshChordInspector();
     updateVerticalScrollBar();
+    chordInspectorToggleButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFF6B4A18));
+    chordInspectorToggleButton.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xFF8B6428));
+    chordInspectorToggleButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFFFE6B3));
+    chordInspectorToggleButton.onClick = [this]
+    {
+        chordInspectorCollapsed = ! chordInspectorCollapsed;
+        updateChordToggleButton();
+        resized();
+    };
+    updateChordToggleButton();
+    fxInspectorVisible = false;
+    fxInspector.setVisible (false);
+
+    auto& laf = juce::LookAndFeel::getDefaultLookAndFeel();
+    laf.setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xFF17110A));
+    laf.setColour (juce::PopupMenu::textColourId, juce::Colour (0xFFFFE6B3));
+    laf.setColour (juce::PopupMenu::highlightedBackgroundColourId, juce::Colour (0xFF6B4A18));
+    laf.setColour (juce::PopupMenu::highlightedTextColourId, juce::Colour (0xFFFFF1CF));
+    laf.setColour (juce::PopupMenu::headerTextColourId, juce::Colour (0xFFE3C891));
 
     transportBar.setTempoText ("Tempo: --");
     transportBar.setBarsText ("Bar 1 | Beat 1");
@@ -327,6 +377,11 @@ ReasonMainComponent::ReasonMainComponent()
         session.setTrackVolume (index, value);
     };
 
+    trackList.onPanChanged = [this] (int index, float value)
+    {
+        session.setTrackPan (index, value);
+    };
+
     trackList.onNameChanged = [this] (int index, const juce::String& name)
     {
         session.setTrackName (index, name);
@@ -340,6 +395,8 @@ ReasonMainComponent::ReasonMainComponent()
 
     trackList.onFxClicked = [this] (int index)
     {
+        fxInspectorVisible = true;
+        resized();
         showFxMenu (index);
     };
 
@@ -386,6 +443,56 @@ ReasonMainComponent::ReasonMainComponent()
         refreshFxInspector();
     };
 
+    chordInspector.onChordCellAction = [this] (int measure, int beat, ChordInspectorComponent::ChordCellAction cellAction)
+    {
+        SessionController::ChordEditAction action = SessionController::ChordEditAction::block;
+        if (cellAction == ChordInspectorComponent::ChordCellAction::arpeggio)
+            action = SessionController::ChordEditAction::arpeggio;
+        else if (cellAction == ChordInspectorComponent::ChordCellAction::deleteChord)
+            action = SessionController::ChordEditAction::deleteChord;
+        else if (cellAction == ChordInspectorComponent::ChordCellAction::doubleTime)
+            action = SessionController::ChordEditAction::doubleTime;
+        else if (cellAction == ChordInspectorComponent::ChordCellAction::semitoneUp)
+            action = SessionController::ChordEditAction::semitoneUp;
+        else if (cellAction == ChordInspectorComponent::ChordCellAction::semitoneDown)
+            action = SessionController::ChordEditAction::semitoneDown;
+        else if (cellAction == ChordInspectorComponent::ChordCellAction::octaveUp)
+            action = SessionController::ChordEditAction::octaveUp;
+        else if (cellAction == ChordInspectorComponent::ChordCellAction::octaveDown)
+            action = SessionController::ChordEditAction::octaveDown;
+        else if (cellAction == ChordInspectorComponent::ChordCellAction::inversionUp)
+            action = SessionController::ChordEditAction::inversionUp;
+        else if (cellAction == ChordInspectorComponent::ChordCellAction::inversionDown)
+            action = SessionController::ChordEditAction::inversionDown;
+
+        if (session.applyChordEditAction (session.getSelectedTrack(), measure, beat, action))
+        {
+            timeline.repaint();
+            refreshChordInspector();
+            if (chordInspector.onChordCellSelected != nullptr)
+                chordInspector.onChordCellSelected (measure, beat);
+        }
+    };
+
+    chordInspector.onEmptyChordCellChosen = [this] (int measure, int beat, const juce::String& chordSymbol)
+    {
+        if (session.setChordAtCell (session.getSelectedTrack(), measure, beat, chordSymbol))
+        {
+            timeline.repaint();
+            refreshChordInspector();
+            if (chordInspector.onChordCellSelected != nullptr)
+                chordInspector.onChordCellSelected (measure, beat);
+        }
+    };
+
+    chordInspector.onChordCellSelected = [this] (int measure, int beat)
+    {
+        std::vector<ChordInspectorComponent::PreviewNote> preview;
+        for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+            preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats });
+        chordInspector.setPreviewNotes (preview);
+    };
+
     timeline.onTrackSelected = [this] (int index)
     {
         trackList.setSelectedIndex (index);
@@ -423,6 +530,8 @@ ReasonMainComponent::ReasonMainComponent()
 
     trackListResizer = std::make_unique<TrackListResizer> (*this);
     addAndMakeVisible (*trackListResizer);
+    inspectorResizer = std::make_unique<InspectorResizer> (*this);
+    addAndMakeVisible (*inspectorResizer);
 
     verticalScrollBar.setRangeLimits (0.0, 1.0);
     verticalScrollBar.setCurrentRange (0.0, 1.0);
@@ -461,12 +570,8 @@ void ReasonMainComponent::resized()
 {
     auto r = getLocalBounds();
 
-    auto topArea = r.removeFromTop (72);
-    constexpr int targetTransportWidth = 1120;
-    const int maxAllowedWidth = juce::jmax (200, topArea.getWidth() - 20);
-    const int transportWidth = juce::jmin (targetTransportWidth, maxAllowedWidth);
-    auto transportArea = topArea.withSizeKeepingCentre (transportWidth, topArea.getHeight());
-    transportBar.setBounds (transportArea);
+    auto topArea = r.removeFromTop (86);
+    transportBar.setBounds (topArea);
 
     auto trackListArea = r.removeFromLeft (trackListWidth);
     trackList.setBounds (trackListArea);
@@ -475,9 +580,33 @@ void ReasonMainComponent::resized()
     trackListResizer->setBounds (trackResizerArea);
 
     auto inspectorArea = r.removeFromRight (inspectorWidth);
-    auto chordInspectorArea = inspectorArea.removeFromTop (220);
-    chordInspector.setBounds (chordInspectorArea);
-    fxInspector.setBounds (inspectorArea);
+    auto inspectorResizerArea = r.removeFromRight (6);
+    inspectorResizer->setBounds (inspectorResizerArea);
+    chordInspectorToggleButton.setBounds (inspectorArea.removeFromTop (26).reduced (3, 2));
+    inspectorArea.removeFromTop (4);
+
+    if (chordInspectorCollapsed)
+    {
+        chordInspector.setVisible (false);
+    }
+    else
+    {
+        chordInspector.setVisible (true);
+        const int chordHeight = fxInspectorVisible ? 220 : inspectorArea.getHeight();
+        chordInspector.setBounds (inspectorArea.removeFromTop (juce::jmax (0, chordHeight)));
+        inspectorArea.removeFromTop (4);
+    }
+
+    if (fxInspectorVisible)
+    {
+        fxInspector.setVisible (true);
+        fxInspector.setBounds (inspectorArea);
+    }
+    else
+    {
+        fxInspector.setVisible (false);
+        fxInspector.setBounds ({});
+    }
 
     auto scrollBarArea = r.removeFromRight (12);
     verticalScrollBar.setBounds (scrollBarArea.reduced (2, 2));
@@ -611,13 +740,45 @@ bool ReasonMainComponent::keyPressed (const juce::KeyPress& key)
 
     if (keyChar == 'r' || keyChar == 'R')
     {
-        const bool recording = session.toggleRecord();
-        transportBar.setRecordActive (recording);
+        if (! session.isRecording())
+        {
+            const bool recording = session.toggleRecord();
+            transportBar.setRecordActive (recording);
+        }
+        return true;
+    }
+
+    if (keyChar == 'l' || keyChar == 'L')
+    {
+        const auto selectedClipId = timeline.getSelectedClipId();
+        auto clipInfo = session.getClipInfo (selectedClipId);
+        if (clipInfo && clipInfo->type == SessionController::ClipType::midi)
+        {
+            const double lengthSeconds = juce::jmax (0.01, clipInfo->lengthSeconds);
+            const int targetTrack = clipInfo->trackIndex;
+            uint64_t lastNewClipId = selectedClipId;
+            for (int i = 0; i < 5; ++i)
+            {
+                const double start = clipInfo->startSeconds + (i + 1) * lengthSeconds;
+                const auto newId = session.duplicateClipToTrack (selectedClipId, targetTrack, start);
+                if (newId != 0)
+                    lastNewClipId = newId;
+            }
+            timeline.setSelectedClipId (lastNewClipId);
+            refreshSessionState();
+        }
         return true;
     }
 
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
     {
+        if (chordInspector.deleteSelectedChordIfAny())
+        {
+            timeline.repaint();
+            refreshChordInspector();
+            return true;
+        }
+
         const auto clipId = timeline.getSelectedClipId();
         if (clipId != 0)
         {
@@ -1024,6 +1185,8 @@ void ReasonMainComponent::showFxMenu (int trackIndex)
         const auto& choice = choices[(size_t) result - 1];
         const auto pluginId = session.insertEffect (trackIndex, choice);
         trackList.setTrackEffectCounts (session.getTrackEffectCounts());
+        fxInspectorVisible = true;
+        resized();
         refreshFxInspector();
 
         if (pluginId != 0)
@@ -1376,22 +1539,31 @@ void ReasonMainComponent::refreshChordInspector()
     const auto trackName = session.getTrackName (trackIndex);
 
     auto labels = session.getChordLabelsForTrack (trackIndex);
-    juce::StringArray lines;
     juce::StringArray symbols;
     juce::Array<double> starts;
+    juce::Array<int> measures;
+    juce::Array<int> beats;
     for (const auto& label : labels)
     {
         const auto timeText = session.getBarsAndBeatsText (label.startSeconds);
-        lines.add (timeText + "  " + label.symbol);
+        auto parts = juce::StringArray::fromTokens (timeText.retainCharacters ("0123456789|"), "|", "");
         symbols.add (label.symbol);
         starts.add (label.startSeconds);
+        measures.add (parts.size() >= 1 ? juce::jmax (1, parts[0].getIntValue()) : 1);
+        beats.add (parts.size() >= 2 ? juce::jmax (1, parts[1].getIntValue()) : 1);
     }
 
     juce::String staff;
     if (! symbols.isEmpty())
         staff = "| " + symbols.joinIntoString (" | ") + " |";
 
-    chordInspector.setChords (trackName, lines, starts, staff);
+    int beatsPerBar = 4;
+    const auto timeSig = session.getTimeSignature();
+    const auto slash = timeSig.indexOfChar ('/');
+    if (slash > 0)
+        beatsPerBar = juce::jlimit (1, 16, timeSig.substring (0, slash).getIntValue());
+
+    chordInspector.setChords (trackName, symbols, starts, measures, beats, beatsPerBar, staff);
     chordInspector.setCurrentTimeSeconds (session.getCurrentTimeSeconds());
 }
 
@@ -1400,6 +1572,7 @@ void ReasonMainComponent::refreshSessionState()
     trackList.setTracks (session.getTrackNames());
     trackList.setTrackInstrumentNames (session.getTrackInstrumentNames());
     trackList.setTrackVolumes (session.getTrackVolumes());
+    trackList.setTrackPans (session.getTrackPans());
     trackList.setTrackEffectCounts (session.getTrackEffectCounts());
     trackList.setTrackMuteStates (session.getTrackMuteStates());
     trackList.setTrackSoloStates (session.getTrackSoloStates());
@@ -1475,15 +1648,22 @@ void ReasonMainComponent::setMainUiVisible (bool shouldBeVisible)
     transportBar.setVisible (shouldBeVisible);
     trackList.setVisible (shouldBeVisible);
     timeline.setVisible (shouldBeVisible);
-    chordInspector.setVisible (shouldBeVisible);
-    fxInspector.setVisible (shouldBeVisible);
+    chordInspectorToggleButton.setVisible (shouldBeVisible);
+    chordInspector.setVisible (shouldBeVisible && ! chordInspectorCollapsed);
+    fxInspector.setVisible (shouldBeVisible && fxInspectorVisible);
     verticalScrollBar.setVisible (shouldBeVisible);
     trackListResizer->setVisible (shouldBeVisible);
+    inspectorResizer->setVisible (shouldBeVisible);
 
     const bool shouldShowPiano = shouldBeVisible && pianoRollVisible;
     pianoRoll.setVisible (shouldShowPiano);
     if (pianoRollResizer != nullptr)
         pianoRollResizer->setVisible (shouldShowPiano);
+}
+
+void ReasonMainComponent::updateChordToggleButton()
+{
+    chordInspectorToggleButton.setButtonText (chordInspectorCollapsed ? "Chords >" : "Chords v");
 }
 
 void ReasonMainComponent::dismissStartupOverlay()
