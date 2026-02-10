@@ -4,6 +4,8 @@ MODULO (Musician-Owned DAW User-Led Orchestration) is a standalone DAW built on 
 
 This repository contains the code needed to build and run MODULO, including the custom DAW app and integrated ReaLchords-based generation flow.
 
+![Modulo Startup Screen](examples/Reason/Modulo_Loading_1920x1080.png)
+
 ## Why the Name "Modulo"
 
 `Modulo` is not only an acronym. In computation, the modulo (`%`) operator returns the remainder after division. The remainder metaphor is central to this project:
