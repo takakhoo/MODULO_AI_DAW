@@ -132,14 +132,10 @@ int TrackListComponent::getTrackIndexAtY (int y) const noexcept
 
 void TrackListComponent::resized()
 {
-    auto r = getLocalBounds();
-    r.removeFromTop (headerHeight);
-
     for (int i = 0; i < strips.size(); ++i)
     {
-        auto row = r.removeFromTop (rowHeight);
-        row.translate (0, -scrollOffset);
-        strips[i]->setBounds (row);
+        const int y = headerHeight + i * rowHeight - scrollOffset;
+        strips[i]->setBounds (0, y, getWidth(), rowHeight);
     }
 }
 
@@ -160,6 +156,13 @@ void TrackListComponent::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xFFFFE6B3).withAlpha (0.9f));
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
     g.drawText ("Tracks", header.reduced (10, 4), juce::Justification::centredLeft);
+
+    if (dragReorderActive && dragReorderTargetIndex >= 0)
+    {
+        const int y = headerHeight + dragReorderTargetIndex * rowHeight - scrollOffset;
+        g.setColour (juce::Colour (0xFFFFE6B3).withAlpha (0.9f));
+        g.fillRect (0, y - 2, getWidth(), 3);
+    }
 }
 
 void TrackListComponent::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& details)
@@ -261,6 +264,40 @@ void TrackListComponent::rebuildStrips()
         {
             if (onContextMenuRequested)
                 onContextMenuRequested (index, source);
+        };
+
+        strip->onReorderDrag = [this] (int sourceIndex, int pointerY, bool finished)
+        {
+            if (! dragReorderActive)
+            {
+                dragReorderActive = true;
+                dragReorderSourceIndex = sourceIndex;
+                dragReorderTargetIndex = sourceIndex;
+            }
+
+            int target = getTrackIndexAtY (pointerY);
+            if (target < 0)
+            {
+                if (pointerY < headerHeight)
+                    target = 0;
+                else
+                    target = juce::jmax (0, tracks.size() - 1);
+            }
+            dragReorderTargetIndex = juce::jlimit (0, juce::jmax (0, tracks.size() - 1), target);
+            repaint();
+
+            if (finished)
+            {
+                const int src = dragReorderSourceIndex;
+                const int dst = dragReorderTargetIndex;
+                dragReorderActive = false;
+                dragReorderSourceIndex = -1;
+                dragReorderTargetIndex = -1;
+                repaint();
+
+                if (src >= 0 && dst >= 0 && src != dst && onTrackReordered != nullptr)
+                    onTrackReordered (src, dst);
+            }
         };
 
         addAndMakeVisible (strip);

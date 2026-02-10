@@ -323,6 +323,15 @@ ReasonMainComponent::ReasonMainComponent()
         showFileMenu();
     };
 
+    transportBar.onNewTrack = [this]
+    {
+        if (session.createTrack())
+        {
+            refreshSessionState();
+            updateVerticalScrollBar();
+        }
+    };
+
     transportBar.onGenerateChords = [this]
     {
         generateChordOptionsForSelection();
@@ -420,6 +429,17 @@ ReasonMainComponent::ReasonMainComponent()
     trackList.onContextMenuRequested = [this] (int index, juce::Component* source)
     {
         showChordTrackMenu (index, source);
+    };
+
+    trackList.onTrackReordered = [this] (int sourceIndex, int targetIndex)
+    {
+        if (session.reorderTrack (sourceIndex, targetIndex))
+        {
+            refreshSessionState();
+            trackList.setSelectedIndex (session.getSelectedTrack());
+            refreshFxInspector();
+            refreshChordInspector();
+        }
     };
 
     fxInspector.onSlotSelected = [this] (uint64_t pluginId)
@@ -570,7 +590,7 @@ void ReasonMainComponent::resized()
 {
     auto r = getLocalBounds();
 
-    auto topArea = r.removeFromTop (86);
+    auto topArea = r.removeFromTop (112);
     transportBar.setBounds (topArea);
 
     auto trackListArea = r.removeFromLeft (trackListWidth);
@@ -666,12 +686,21 @@ bool ReasonMainComponent::keyPressed (const juce::KeyPress& key)
         const int keyCode = key.getKeyCode();
         if (keyCode == 'z' || keyCode == 'Z')
         {
+            const bool hadPianoRollOpen = pianoRollVisible;
+            const uint64_t previousPianoRollClipId = pianoRoll.getClipId();
+            const bool wasFocusedInPianoRoll = pianoRoll.hasKeyboardFocus (true);
             if (key.getModifiers().isShiftDown())
                 session.redo();
             else
                 session.undo();
             refreshSessionState();
             updateVerticalScrollBar();
+            if (hadPianoRollOpen && previousPianoRollClipId != 0)
+            {
+                openPianoRollForClip (previousPianoRollClipId);
+                if (wasFocusedInPianoRoll)
+                    pianoRoll.grabKeyboardFocus();
+            }
             return true;
         }
         if (keyCode == 'd' || keyCode == 'D')
@@ -768,6 +797,24 @@ bool ReasonMainComponent::keyPressed (const juce::KeyPress& key)
             refreshSessionState();
         }
         return true;
+    }
+
+    if (keyChar == 'u' || keyChar == 'U')
+    {
+        if (session.transposeTrackOctave (session.getSelectedTrack(), +1))
+        {
+            refreshSessionState();
+            return true;
+        }
+    }
+
+    if (keyChar == 'd' || keyChar == 'D')
+    {
+        if (session.transposeTrackOctave (session.getSelectedTrack(), -1))
+        {
+            refreshSessionState();
+            return true;
+        }
     }
 
     if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
@@ -1583,6 +1630,7 @@ void ReasonMainComponent::refreshSessionState()
     updateTimeDisplay();
     refreshFxInspector();
     refreshChordInspector();
+    updateVerticalScrollBar();
 
     pianoRollVisible = false;
     pianoRoll.setVisible (false);
@@ -1609,9 +1657,10 @@ void ReasonMainComponent::updateVerticalScrollBar()
 
 void ReasonMainComponent::handleTrackScroll (int newOffset)
 {
-    trackScrollOffset = newOffset;
-    trackList.setScrollOffset (trackScrollOffset);
+    const int maxOffset = juce::jmax (0, timeline.getContentHeight() - timeline.getVisibleTrackHeight());
+    trackScrollOffset = juce::jlimit (0, maxOffset, newOffset);
     timeline.setScrollOffset (trackScrollOffset);
+    trackList.setScrollOffset (trackScrollOffset);
 
     ignoreVerticalScrollCallback = true;
     verticalScrollBar.setCurrentRange ((double) trackScrollOffset,

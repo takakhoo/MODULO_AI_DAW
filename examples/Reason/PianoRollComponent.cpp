@@ -193,7 +193,7 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& event)
     if (event.x < keyboardWidth)
         return;
 
-    if (! event.mods.isCtrlDown())
+    if (! event.mods.isCtrlDown() && ! event.mods.isCommandDown())
     {
         isLassoSelecting = true;
         lassoAdditive = event.mods.isCommandDown() || event.mods.isShiftDown();
@@ -462,6 +462,23 @@ bool PianoRollComponent::keyPressed (const juce::KeyPress& key)
             repaint();
             return true;
         }
+    }
+
+    const int code = key.getKeyCode();
+    if (! key.getModifiers().isAnyModifierKeyDown() && (code == 'q' || code == 'Q'))
+    {
+        juce::Array<juce::ValueTree> targets;
+        if (! selectedNotes.isEmpty())
+            targets = selectedNotes;
+        else if (selectedNoteState.isValid())
+            targets.add (selectedNoteState);
+
+        if (targets.isEmpty())
+            return true;
+
+        if (session->quantizeMidiNotes (clipId, targets, getGridSeconds()))
+            repaint();
+        return true;
     }
 
     return false;

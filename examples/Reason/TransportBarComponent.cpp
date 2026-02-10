@@ -6,6 +6,7 @@ TransportBarComponent::TransportBarComponent()
     addAndMakeVisible (stopButton);
     addAndMakeVisible (recordButton);
     addAndMakeVisible (fileButton);
+    addAndMakeVisible (newTrackButton);
     addAndMakeVisible (chordsButton);
     addAndMakeVisible (metronomeButton);
     addAndMakeVisible (midiInputButton);
@@ -40,11 +41,14 @@ TransportBarComponent::TransportBarComponent()
                              juce::Colour (0xFFFF5A5A),
                              juce::Colour (0xFFB02E2E));
     styleActionButton (fileButton, juce::Colour (0xFF6B4A18));
+    styleActionButton (newTrackButton, juce::Colour (0xFF7A5A22));
     styleActionButton (chordsButton, juce::Colour (0xFF8B6428));
     styleActionButton (midiInputButton, juce::Colour (0xFF7A5A22));
 
-    for (auto* button : { &fileButton, &chordsButton, &midiInputButton })
+    for (auto* button : { &fileButton, &newTrackButton, &chordsButton, &midiInputButton })
         button->setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+    newTrackButton.setButtonText ("+ New Track");
+    newTrackButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFFFFE7B5));
     chordsButton.setButtonText ("   AI Generate Chords");
     chordsButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xFF2B1905));
     chordsButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xFFD9A84D));
@@ -66,8 +70,8 @@ TransportBarComponent::TransportBarComponent()
         metronomeButton.setImages (normal.get(), over.get(), down.get(), normal.get(), over.get(), down.get());
     }
     metronomeButton.setTooltip ("Metronome");
-    metronomeButton.setColour (juce::DrawableButton::backgroundColourId, juce::Colour (0xFFE0B15A));
-    metronomeButton.setColour (juce::DrawableButton::backgroundOnColourId, juce::Colour (0xFFF0C875));
+    metronomeButton.setColour (juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
+    metronomeButton.setColour (juce::DrawableButton::backgroundOnColourId, juce::Colours::transparentBlack);
 
     if (auto image = juce::ImageFileFormat::loadFrom (BinaryData::setting_png, BinaryData::setting_pngSize);
         image.isValid())
@@ -83,8 +87,8 @@ TransportBarComponent::TransportBarComponent()
         settingsButton.setImages (normal.get(), over.get(), down.get(), normal.get(), over.get(), down.get());
     }
     settingsButton.setTooltip ("Settings");
-    settingsButton.setColour (juce::DrawableButton::backgroundColourId, juce::Colour (0xFFE0B15A));
-    settingsButton.setColour (juce::DrawableButton::backgroundOnColourId, juce::Colour (0xFFF0C875));
+    settingsButton.setColour (juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
+    settingsButton.setColour (juce::DrawableButton::backgroundOnColourId, juce::Colours::transparentBlack);
 
     playButton.onClick = [this]
     {
@@ -108,6 +112,12 @@ TransportBarComponent::TransportBarComponent()
     {
         if (onFileMenu)
             onFileMenu();
+    };
+
+    newTrackButton.onClick = [this]
+    {
+        if (onNewTrack)
+            onNewTrack();
     };
 
     chordsButton.onClick = [this]
@@ -278,10 +288,8 @@ void TransportBarComponent::paint (juce::Graphics& g)
         g.drawRoundedRectangle (well, 6.0f, 1.0f);
     };
 
-    for (auto* b : { (juce::Component*) &playButton, (juce::Component*) &stopButton, (juce::Component*) &recordButton,
-                     (juce::Component*) &fileButton,
-                     (juce::Component*) &metronomeButton, (juce::Component*) &midiInputButton,
-                     (juce::Component*) &settingsButton })
+    for (auto* b : { (juce::Component*) &fileButton, (juce::Component*) &newTrackButton,
+                     (juce::Component*) &midiInputButton })
         drawButtonWell (b->getBounds());
 
     // Blend Generate Chords into the metallic bar: softer fill, minimal border.
@@ -301,8 +309,8 @@ void TransportBarComponent::paint (juce::Graphics& g)
     if (metronomeButton.getToggleState())
     {
         const auto mb = metronomeButton.getBounds().toFloat().expanded (1.0f);
-        g.setColour (juce::Colour (0xCC5A3A10));
-        g.drawRoundedRectangle (mb, 6.0f, 1.5f);
+        g.setColour (juce::Colours::black.withAlpha (0.22f));
+        g.fillRoundedRectangle (mb, 6.0f);
     }
 
     const auto panel = displayPanelBounds.toFloat();
@@ -316,13 +324,13 @@ void TransportBarComponent::paint (juce::Graphics& g)
     g.setColour (panelBorder);
     g.drawRoundedRectangle (panel, 8.0f, recordActive ? 2.0f : 1.5f);
 
-    if (! moduloBounds.isEmpty())
+    if (! moduloLabelBounds.isEmpty())
     {
-        g.setFont (juce::FontOptions (46.0f, juce::Font::bold));
+        g.setFont (juce::FontOptions (30.0f, juce::Font::bold));
         g.setColour (juce::Colour (0xFF5A3B12).withAlpha (0.35f));
-        g.drawText ("MODULO", moduloBounds.translated (0, 2), juce::Justification::centred, true);
+        g.drawText ("MODULO", moduloLabelBounds.translated (0, 2), juce::Justification::centred, true);
         g.setColour (juce::Colour (0xFFFFE6AE));
-        g.drawText ("MODULO", moduloBounds, juce::Justification::centred, true);
+        g.drawText ("MODULO", moduloLabelBounds, juce::Justification::centred, true);
     }
 
     if (recordActive)
@@ -344,19 +352,24 @@ void TransportBarComponent::resized()
 {
     auto area = getLocalBounds().reduced (8, 6);
     const int laneHeight = area.getHeight();
-    const int buttonHeight = juce::jmax (30, laneHeight - 12);
-    const int buttonY = area.getY() + (laneHeight - buttonHeight) / 2;
+    const int brandRowH = juce::jlimit (22, 32, laneHeight / 3);
+    auto buttonArea = area;
+    buttonArea.removeFromBottom (brandRowH);
+    const int buttonHeight = buttonArea.getHeight();
+    const int buttonY = buttonArea.getY();
     const int gap = 8;
 
-    int fileW = 66;
+    int fileW = 84;
     int chordsW = 170;
     int midiW = 148;
     int settingsW = 34;
 
-    int leftX = area.getX();
-    int rightX = area.getRight();
+    int leftX = buttonArea.getX();
+    int rightX = buttonArea.getRight();
 
-    fileButton.setBounds (leftX, buttonY, fileW, buttonHeight);
+    const int fileH = juce::jmax (16, (buttonHeight - 2) / 2);
+    fileButton.setBounds (leftX, buttonY, fileW, fileH);
+    newTrackButton.setBounds (leftX, buttonY + fileH + 2, fileW, juce::jmax (14, buttonHeight - fileH - 2));
     leftX += fileW + gap;
     chordsButton.setBounds (leftX, buttonY, chordsW, buttonHeight);
     leftX += chordsW + gap;
@@ -389,8 +402,8 @@ void TransportBarComponent::resized()
     }
 
     centerWidth = juce::jmax (100, centerWidth);
-    auto center = juce::Rectangle<int> (0, area.getY(), centerWidth, laneHeight)
-                      .withCentre (area.getCentre());
+    auto center = juce::Rectangle<int> (0, buttonArea.getY(), centerWidth, buttonArea.getHeight())
+                      .withCentre (buttonArea.getCentre());
     center.setX (juce::jlimit (centerLeftLimit, juce::jmax (centerLeftLimit, centerRightLimit - centerWidth), center.getX()));
     displayPanelBounds = center;
 
@@ -405,9 +418,11 @@ void TransportBarComponent::resized()
     const int metroMaxW = juce::jmax (0, rightX - metroX);
     metronomeButton.setBounds (metroX, buttonY, juce::jmax (0, juce::jmin (metronomeW, metroMaxW)), buttonHeight);
 
-    const int moduloX = chordsButton.getRight() + gap;
-    const int moduloW = juce::jmax (0, playButton.getX() - gap - moduloX);
-    moduloBounds = juce::Rectangle<int> (moduloX, buttonY, moduloW, buttonHeight);
+    const int moduloW = juce::jmax (120, juce::jmin (420, displayPanelBounds.getWidth() + 80));
+    moduloLabelBounds = juce::Rectangle<int> (displayPanelBounds.getCentreX() - moduloW / 2,
+                                              buttonArea.getBottom() + 1,
+                                              moduloW,
+                                              brandRowH - 2);
 
     auto panel = center.reduced (8, 3);
     auto topRow = panel.removeFromTop ((int) (panel.getHeight() * 0.58f));

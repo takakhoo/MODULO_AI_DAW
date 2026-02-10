@@ -2554,3 +2554,89 @@ python -m realchords.realjam.server --port 8080
 ### Files changed
 - `README.md`
 - `TIMELINE.md`
+
+---
+
+## 2026-02-10 06:35 - Track reorder drag workflow + unified hotkey documentation pass
+
+### Goals
+- Enable fast track ordering directly from the left controller lane (drag up/down).
+- Ensure reorder is not visual-only and truly updates underlying track order in the Edit.
+- Publish a clear operator-facing hotkey/directions list in `README.md`.
+- Deepen project log fidelity with implementation details and rationale.
+
+### User-facing behavior added
+1. **Drag-to-reorder from left track strip**
+   - User can click/drag a track strip in the left controller area and move it vertically.
+   - Drop position determines target index.
+   - A horizontal insertion indicator is shown during drag for placement feedback.
+   - Reorder updates the real Edit track order, then refreshes timeline/track list/inspectors.
+
+2. **Piano Roll note insertion gesture alignment**
+   - Added support for `Cmd+Click` note insertion in the Piano Roll note grid.
+   - Existing `Ctrl+Click` insertion remains supported for compatibility.
+
+3. **README operational controls section**
+   - Added new `Directions and Hotkeys` section documenting:
+     - Track drag reorder
+     - Recording, looping, quantize, transpose, delete flows
+     - Project-level shortcuts (`Cmd+N/O/S`, undo/redo, duplicate, copy/paste)
+     - Piano Roll editing gestures and shortcuts
+
+### Backend implementation details
+1. **New session API for track order mutation**
+   - Added `SessionController::reorderTrack (int sourceIndex, int targetIndex)`.
+   - Method validates bounds/state, builds a source-excluded target ordering view, computes a stable `TrackInsertPoint`, and calls `edit->moveTrack`.
+   - Wraps operation in undo transaction (`"Reorder Track"`), updates selected track index, rebuilds track name state, and reapplies MIDI live-routing safety call.
+
+2. **ReasonMainComponent wiring**
+   - Added `trackList.onTrackReordered` callback.
+   - On successful reorder:
+     - calls `refreshSessionState()`
+     - reasserts selected track in timeline + track list
+     - refreshes FX and Chord inspectors
+
+3. **TrackList drag state + feedback**
+   - Added drag state fields:
+     - `dragReorderSourceIndex`
+     - `dragReorderTargetIndex`
+     - `dragReorderActive`
+   - Added `onTrackReordered` callback surface.
+   - Implemented live drop-target computation from pointer Y and painted insertion line.
+
+4. **TrackStrip drag event emission**
+   - Added `onReorderDrag (sourceIndex, pointerY, finished)` callback.
+   - `mouseDown` starts drag-reorder intent and keeps selection behavior.
+   - `mouseDrag` streams candidate drop positions.
+   - `mouseUp` finalizes reorder intent and preserves context-menu behavior.
+
+### Mistakes / friction and fixes
+- **Input gesture mismatch risk:** README intent required `Cmd+Click` for note insertion, while code path previously required `Ctrl+Click`.
+  - **Fix:** broadened insertion condition to accept either `Ctrl` or `Command`.
+- **Reorder target edge behavior:** drag outside track-content area can produce no direct index hit.
+  - **Fix:** explicit clamp to top/bottom target index based on pointer relative to header/content.
+- **Selection continuity risk after reorder:** track selection could visually drift after model mutation.
+  - **Fix:** post-reorder explicit reselection in both `timeline` and `trackList`.
+
+### Files changed
+- `examples/Reason/SessionController.h`
+- `examples/Reason/SessionController.cpp`
+- `examples/Reason/TrackStripComponent.h`
+- `examples/Reason/TrackStripComponent.cpp`
+- `examples/Reason/TrackListComponent.h`
+- `examples/Reason/TrackListComponent.cpp`
+- `examples/Reason/ReasonMainComponent.cpp`
+- `examples/Reason/PianoRollComponent.cpp`
+- `README.md`
+- `TIMELINE.md`
+
+### Validation plan executed
+- Static code-path review of full event chain:
+  - left strip mouse drag -> list drag state -> `onTrackReordered` -> session mutation -> UI refresh.
+- Verified reordering operation is undo-transaction wrapped in backend.
+- Verified existing right-click context menu behavior retained in `TrackStripComponent::mouseUp`.
+- Verified new README hotkey section reflects currently implemented key handlers.
+
+### Notes for next iteration
+- Optional enhancement: add animated ghost row while dragging for stronger perceived direct manipulation.
+- Optional enhancement: auto-scroll track list while dragging near top/bottom edges on long projects.

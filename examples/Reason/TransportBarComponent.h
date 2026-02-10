@@ -12,6 +12,7 @@ public:
     std::function<void()> onStop;
     std::function<void()> onRecord;
     std::function<void()> onFileMenu;
+    std::function<void()> onNewTrack;
     std::function<void()> onGenerateChords;
     std::function<void()> onMidiInput;
     std::function<void()> onSettings;
@@ -45,6 +46,7 @@ private:
     juce::ShapeButton recordButton { "Record", juce::Colours::transparentBlack,
                                      juce::Colours::transparentBlack, juce::Colours::transparentBlack };
     juce::TextButton fileButton { "File" };
+    juce::TextButton newTrackButton { "+ Track" };
     juce::TextButton chordsButton { "Generate Chords" };
     juce::DrawableButton metronomeButton { "Metronome", juce::DrawableButton::ImageFitted };
     juce::TextButton midiInputButton { "MIDI In" };
@@ -59,6 +61,6 @@ private:
     bool recordActive = false;
     bool recordBlinkOn = false;
     juce::Rectangle<int> displayPanelBounds;
-    juce::Rectangle<int> moduloBounds;
+    juce::Rectangle<int> moduloLabelBounds;
     juce::Image chordsIcon;
 };

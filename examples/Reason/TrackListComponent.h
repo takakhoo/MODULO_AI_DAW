@@ -37,6 +37,7 @@ public:
     std::function<void (int, bool)> onMuteChanged;
     std::function<void (int, bool)> onSoloChanged;
     std::function<void (int, juce::Component*)> onContextMenuRequested;
+    std::function<void (int sourceIndex, int targetIndex)> onTrackReordered;
     std::function<void (int)> onVerticalScrollChanged;
 
     void resized() override;
@@ -60,4 +61,7 @@ private:
     static constexpr int rowHeight = 104;
     int scrollOffset = 0;
     int visibleHeightOverride = -1;
+    int dragReorderSourceIndex = -1;
+    int dragReorderTargetIndex = -1;
+    bool dragReorderActive = false;
 };

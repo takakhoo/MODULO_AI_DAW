@@ -28,6 +28,46 @@ In short, MODULO is designed to return what deterministic generation leaves on t
 - Enhanced transport UI with bars/beats + time + tempo + key + time signature.
 - Branded `MODULO.app` bundle with custom dock icon.
 
+## Directions and Hotkeys
+
+Core interaction directions:
+
+- Reorder tracks by dragging a track from the left track controller area up/down.
+- Open/close Piano Roll for selected clip with `E`, then edit notes directly in-grid.
+- Click a chord cell in Chord Workshop to target edits, then use persistent edit buttons below.
+
+Global / arrangement hotkeys:
+
+- `Space`: toggle play/stop, and if recording is active, stop + commit recording take.
+- `R`: start recording (does not toggle recording off).
+- `L`: create loop copies (adds 5 duplicates of selected MIDI clip forward in time).
+- `U`: move all MIDI notes in selected track up one octave.
+- `D`: move all MIDI notes in selected track down one octave.
+- `Delete` / `Backspace`: delete selected chord cell (if any), else selected clip, else selected track.
+- `I`: add idea marker at current insertion time.
+- `E`: toggle Piano Roll for currently selected clip.
+
+Project/session shortcuts:
+
+- `Cmd+N`: new project.
+- `Cmd+O`: open project.
+- `Cmd+S`: save project.
+- `Cmd+Shift+S`: save project as.
+- `Cmd+Z`: undo (preserves open Piano Roll state).
+- `Cmd+Shift+Z`: redo (preserves open Piano Roll state).
+- `Cmd+D`: duplicate selected track.
+- `Cmd+C` / `Cmd+V`: copy/paste selected clip at cursor position.
+
+Piano Roll shortcuts and gestures:
+
+- `Cmd+Click` (or `Ctrl+Click`) in note grid: add a note at clicked position using current grid length.
+- `Q`: quantize selected notes to current grid subdivision.
+- `Cmd+A`: select all notes in active Piano Roll clip.
+- `Cmd+C` / `Cmd+V`: copy/paste selected notes in Piano Roll.
+- `Delete` / `Backspace`: delete selected note(s).
+- Mouse wheel / trackpad: horizontal scroll timeline in Piano Roll.
+- `Cmd + Mouse wheel` (or pinch zoom): horizontal zoom around cursor anchor.
+
 ## Deep Learning + HCI Thesis Positioning
 
 MODULO is centered on a single research claim: **reinforcement-learning-driven harmony generation becomes substantially more useful when paired with an HCI layer that encodes expert music-theory workflows**.

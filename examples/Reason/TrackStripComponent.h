@@ -29,10 +29,12 @@ public:
     std::function<void (int, bool)> onMuteChanged;
     std::function<void (int, bool)> onSoloChanged;
     std::function<void (int, juce::Component*)> onContextMenuRequested;
+    std::function<void (int, int, bool)> onReorderDrag;
 
     void paint (juce::Graphics& g) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
 
 private:
@@ -43,11 +45,11 @@ private:
                                const juce::Slider::SliderStyle style, juce::Slider& slider) override;
     };
 
-    struct PanKnobLookAndFeel : public juce::LookAndFeel_V4
+    struct PanSliderLookAndFeel : public juce::LookAndFeel_V4
     {
-        void drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
-                               float sliderPosProportional, float rotaryStartAngle, float rotaryEndAngle,
-                               juce::Slider& slider) override;
+        void drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
+                               float sliderPos, float minSliderPos, float maxSliderPos,
+                               const juce::Slider::SliderStyle style, juce::Slider& slider) override;
     };
 
     void updateGainReadout (float normalizedValue);
@@ -67,6 +69,8 @@ private:
     juce::TextButton muteButton { "M" };
     juce::TextButton soloButton { "S" };
     juce::Rectangle<int> gainSliderBounds;
+    juce::Rectangle<int> panSliderBounds;
     GainSliderLookAndFeel gainSliderLaf;
-    PanKnobLookAndFeel panKnobLaf;
+    PanSliderLookAndFeel panSliderLaf;
+    bool isDragReorderActive = false;
 };

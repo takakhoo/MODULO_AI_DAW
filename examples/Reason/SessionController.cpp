@@ -1448,6 +1448,26 @@ bool SessionController::deleteClip (uint64_t clipId)
     return false;
 }
 
+bool SessionController::createTrack()
+{
+    if (edit == nullptr)
+        return false;
+
+    auto& undoManager = edit->getUndoManager();
+    undoManager.beginNewTransaction ("Add Track");
+
+    auto insertPoint = te::TrackInsertPoint::getEndOfTracks (*edit);
+    auto newTrackPtr = edit->insertNewAudioTrack (insertPoint, nullptr);
+    auto* newTrack = newTrackPtr.get();
+    if (newTrack == nullptr)
+        return false;
+
+    updateTrackNames();
+    ensureTrackStateSize();
+    setSelectedTrack (newTrack->getIndexInEditTrackList());
+    return true;
+}
+
 bool SessionController::deleteTrack (int trackIndex)
 {
     if (edit == nullptr)
@@ -1488,6 +1508,104 @@ bool SessionController::duplicateTrack (int trackIndex)
     updateTrackNames();
     ensureTrackStateSize();
     return true;
+}
+
+bool SessionController::reorderTrack (int sourceIndex, int targetIndex)
+{
+    if (edit == nullptr)
+        return false;
+
+    const int count = getTrackCount();
+    if (count <= 1)
+        return false;
+
+    sourceIndex = juce::jlimit (0, count - 1, sourceIndex);
+    targetIndex = juce::jlimit (0, count - 1, targetIndex);
+    if (sourceIndex == targetIndex)
+        return false;
+
+    auto* sourceTrackRaw = getAudioTrack (sourceIndex);
+    if (sourceTrackRaw == nullptr)
+        return false;
+
+    te::Track::Ptr sourceTrack = sourceTrackRaw;
+
+    juce::Array<te::AudioTrack*> filtered;
+    for (int i = 0; i < count; ++i)
+    {
+        if (auto* t = getAudioTrack (i))
+        {
+            if (t != sourceTrackRaw)
+                filtered.add (t);
+        }
+    }
+
+    if (filtered.isEmpty())
+        return false;
+
+    te::TrackInsertPoint insertPoint = te::TrackInsertPoint::getEndOfTracks (*edit);
+    if (targetIndex <= 0)
+    {
+        insertPoint = te::TrackInsertPoint (*filtered.getUnchecked (0), true);
+    }
+    else if (targetIndex >= filtered.size())
+    {
+        insertPoint = te::TrackInsertPoint (*filtered.getLast(), false);
+    }
+    else
+    {
+        insertPoint = te::TrackInsertPoint (*filtered.getUnchecked (targetIndex - 1), false);
+    }
+
+    auto& undoManager = edit->getUndoManager();
+    undoManager.beginNewTransaction ("Reorder Track");
+    edit->moveTrack (sourceTrack, insertPoint);
+
+    selectedTrackIndex = juce::jlimit (0, juce::jmax (0, getTrackCount() - 1), targetIndex);
+    updateTrackNames();
+    ensureTrackStateSize();
+    configureMidiInputRoutingForLivePlay();
+    return true;
+}
+
+bool SessionController::transposeTrackOctave (int trackIndex, int octaveDelta)
+{
+    if (edit == nullptr || octaveDelta == 0)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    const int semitoneDelta = octaveDelta * 12;
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction (semitoneDelta > 0 ? "Transpose Track Up Octave"
+                                                : "Transpose Track Down Octave");
+
+    bool changed = false;
+    for (auto* clip : track->getClips())
+    {
+        auto* midiClip = dynamic_cast<te::MidiClip*> (clip);
+        if (midiClip == nullptr)
+            continue;
+
+        auto& seq = midiClip->getSequence();
+        for (auto* note : seq.getNotes())
+        {
+            if (note == nullptr)
+                continue;
+
+            const int oldPitch = note->getNoteNumber();
+            const int newPitch = juce::jlimit (0, 127, oldPitch + semitoneDelta);
+            if (newPitch == oldPitch)
+                continue;
+
+            note->setNoteNumber (newPitch, &undo);
+            changed = true;
+        }
+    }
+
+    return changed;
 }
 
 std::vector<SessionController::MidiNoteInfo> SessionController::getMidiNotesForClip (uint64_t clipId) const
@@ -1652,6 +1770,62 @@ bool SessionController::deleteMidiNote (uint64_t clipId, const juce::ValueTree& 
     auto& undo = edit->getUndoManager();
     undo.beginNewTransaction ("Delete MIDI Note");
     midiClip->getSequence().removeNote (*note, &undo);
+    return true;
+}
+
+bool SessionController::quantizeMidiNotes (uint64_t clipId, const juce::Array<juce::ValueTree>& noteStates, double gridSeconds)
+{
+    if (edit == nullptr || gridSeconds <= 0.0 || noteStates.isEmpty())
+        return false;
+
+    auto* midiClip = findMidiClipById (clipId);
+    if (midiClip == nullptr)
+        return false;
+
+    std::vector<te::MidiNote*> notes;
+    std::unordered_set<te::MidiNote*> seen;
+    notes.reserve ((size_t) noteStates.size());
+    for (const auto& state : noteStates)
+    {
+        if (auto* note = findMidiNote (*midiClip, state))
+        {
+            if (seen.insert (note).second)
+                notes.push_back (note);
+        }
+    }
+
+    if (notes.empty())
+        return false;
+
+    const auto clipStart = midiClip->getEditTimeRange().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Quantize MIDI Notes");
+
+    for (auto* note : notes)
+    {
+        if (note == nullptr)
+            continue;
+
+        const auto noteRange = note->getEditTimeRange (*midiClip);
+        const double startSeconds = noteRange.getStart().inSeconds();
+        const double endSeconds = noteRange.getEnd().inSeconds();
+
+        const double quantizedStartSeconds = juce::jmax (0.0, std::round (startSeconds / gridSeconds) * gridSeconds);
+        double quantizedEndSeconds = std::round (endSeconds / gridSeconds) * gridSeconds;
+        if (quantizedEndSeconds <= quantizedStartSeconds + 0.0005)
+            quantizedEndSeconds = quantizedStartSeconds + gridSeconds;
+
+        const auto noteStartBeatAbs = te::toBeats (te::TimePosition::fromSeconds (quantizedStartSeconds), edit->tempoSequence);
+        const auto noteEndBeatAbs = te::toBeats (te::TimePosition::fromSeconds (quantizedEndSeconds), edit->tempoSequence);
+        const double relativeStartBeats = juce::jmax (0.0, (noteStartBeatAbs - clipStartBeat).inBeats());
+        const auto startBeat = te::BeatPosition::fromBeats (relativeStartBeats);
+        const double lengthBeatsValue = juce::jmax (0.001, (noteEndBeatAbs - noteStartBeatAbs).inBeats());
+        const auto lengthBeats = te::BeatDuration::fromBeats (lengthBeatsValue);
+
+        note->setStartAndLength (startBeat, lengthBeats, &undo);
+    }
+
     return true;
 }
 

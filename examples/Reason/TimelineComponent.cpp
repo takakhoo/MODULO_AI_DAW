@@ -131,11 +131,12 @@ void TimelineComponent::paint (juce::Graphics& g)
     drawMarkerLane (g, markerLane);
 
     const int trackCount = session != nullptr ? session->getTrackCount() : 0;
-    auto tracksArea = area;
     for (int trackIndex = 0; trackIndex < trackCount; ++trackIndex)
     {
-        auto trackArea = tracksArea.removeFromTop (rowHeight);
-        trackArea.translate (0, -scrollOffset);
+        auto trackArea = juce::Rectangle<int> (area.getX(),
+                                               rulerHeight + markerLaneHeight + trackIndex * rowHeight - scrollOffset,
+                                               area.getWidth(),
+                                               rowHeight);
         const auto base = reason::trackcolours::base (trackIndex);
         g.setColour (base);
         g.fillRect (trackArea);

@@ -206,8 +206,11 @@ public:
     bool resizeClipRange (uint64_t clipId, double newStartSeconds, double newLengthSeconds);
     uint64_t duplicateClipToTrack (uint64_t clipId, int targetTrackIndex, double newStartSeconds);
     bool deleteClip (uint64_t clipId);
+    bool createTrack();
     bool deleteTrack (int trackIndex);
     bool duplicateTrack (int trackIndex);
+    bool reorderTrack (int sourceIndex, int targetIndex);
+    bool transposeTrackOctave (int trackIndex, int octaveDelta);
 
     std::vector<MidiNoteInfo> getMidiNotesForClip (uint64_t clipId) const;
     std::vector<SustainEvent> getSustainEventsForClip (uint64_t clipId) const;
@@ -216,6 +219,7 @@ public:
                          double startSeconds, double lengthSeconds, int noteNumber);
     bool resizeMidiNote (uint64_t clipId, const juce::ValueTree& noteState, double lengthSeconds);
     bool deleteMidiNote (uint64_t clipId, const juce::ValueTree& noteState);
+    bool quantizeMidiNotes (uint64_t clipId, const juce::Array<juce::ValueTree>& noteStates, double gridSeconds);
 
     bool buildRealchordsNoteEvents (uint64_t clipId, std::vector<RealchordsNoteEvent>& events,
                                     int& endFrame) const;

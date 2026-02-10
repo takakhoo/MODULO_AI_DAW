@@ -95,17 +95,14 @@ TrackStripComponent::TrackStripComponent (int index)
     panLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.75f));
     panLabel.setFont (juce::FontOptions (11.0f, juce::Font::plain));
 
-    panSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    panSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     panSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
     panSlider.setRange (-1.0, 1.0, 0.001);
     panSlider.setValue (0.0, juce::dontSendNotification);
-    panSlider.setRotaryParameters (juce::MathConstants<float>::pi * 1.15f,
-                                   juce::MathConstants<float>::pi * 2.95f,
-                                   true);
-    panSlider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xFFE1E6EE));
-    panSlider.setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour (0xFF4B515A));
-    panSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFF8FAFD));
-    panSlider.setLookAndFeel (&panKnobLaf);
+    panSlider.setColour (juce::Slider::trackColourId, juce::Colour (0xFFE0B15A));
+    panSlider.setColour (juce::Slider::backgroundColourId, juce::Colour (0xFF3C3424));
+    panSlider.setColour (juce::Slider::thumbColourId, juce::Colour (0xFFFFE4A6));
+    panSlider.setLookAndFeel (&panSliderLaf);
     panSlider.onValueChange = [this]
     {
         if (onPanChanged)
@@ -196,45 +193,49 @@ void TrackStripComponent::GainSliderLookAndFeel::drawLinearSlider (juce::Graphic
                    thumbRadius * 2.0f);
 }
 
-void TrackStripComponent::PanKnobLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
-                                                                float sliderPosProportional, float rotaryStartAngle, float rotaryEndAngle,
-                                                                juce::Slider& slider)
+void TrackStripComponent::PanSliderLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int width, int height,
+                                                                  float sliderPos, float minSliderPos, float maxSliderPos,
+                                                                  const juce::Slider::SliderStyle style, juce::Slider& slider)
 {
-    juce::ignoreUnused (sliderPosProportional, rotaryStartAngle, rotaryEndAngle);
+    juce::ignoreUnused (minSliderPos, maxSliderPos);
+    if (style != juce::Slider::LinearHorizontal && style != juce::Slider::LinearBar)
+    {
+        juce::LookAndFeel_V4::drawLinearSlider (g, x, y, width, height, sliderPos,
+                                                minSliderPos, maxSliderPos, style, slider);
+        return;
+    }
 
-    auto bounds = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height).reduced (1.5f);
-    const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
-    const auto center = bounds.getCentre();
+    const float trackHeight = juce::jlimit (5.0f, 10.0f, height * 0.52f);
+    const float trackY = (float) y + ((float) height - trackHeight) * 0.5f;
+    const auto track = juce::Rectangle<float> ((float) x, trackY, (float) width, trackHeight);
+    const float centerX = track.getCentreX();
 
-    // Requested behavior:
-    // - left stop  ~7 o'clock
-    // - center     ~2 o'clock
-    // - right stop ~5 o'clock
-    constexpr float leftAngle = juce::MathConstants<float>::pi * (7.0f / 6.0f);   // 210 deg
-    constexpr float centerAngle = juce::MathConstants<float>::pi * (1.0f / 3.0f); // 60 deg
-    constexpr float rightAngle = juce::MathConstants<float>::pi * (5.0f / 6.0f);  // 150 deg
+    g.setColour (slider.findColour (juce::Slider::backgroundColourId));
+    g.fillRoundedRectangle (track, trackHeight * 0.5f);
 
-    const float value = (float) slider.getValue();
-    float angle = centerAngle;
-    if (value < 0.0f)
-        angle = juce::jmap (value, -1.0f, 0.0f, leftAngle, centerAngle);
-    else
-        angle = juce::jmap (value, 0.0f, 1.0f, centerAngle, rightAngle);
+    const float left = juce::jmin (centerX, sliderPos);
+    const float right = juce::jmax (centerX, sliderPos);
+    if (right - left > 0.5f)
+    {
+        g.setColour (slider.findColour (juce::Slider::trackColourId));
+        g.fillRoundedRectangle (juce::Rectangle<float> (left, trackY, right - left, trackHeight), trackHeight * 0.5f);
+    }
 
-    g.setColour (juce::Colour (0xFF313741));
-    g.fillEllipse (bounds);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xFFE8ECF3), bounds.getX(), bounds.getY(),
-                                             juce::Colour (0xFFA7AFBB), bounds.getRight(), bounds.getBottom(), false));
-    g.fillEllipse (bounds.reduced (2.0f));
-    g.setColour (juce::Colour (0xFF525964));
-    g.drawEllipse (bounds, 1.2f);
+    g.setColour (juce::Colour (0xFFEFD29B).withAlpha (0.7f));
+    g.drawLine (centerX, track.getY() - 1.0f, centerX, track.getBottom() + 1.0f, 1.1f);
 
-    const float pointerLen = radius * 0.7f;
-    const float pointerThickness = juce::jmax (1.8f, radius * 0.15f);
-    juce::Path pointer;
-    pointer.addRoundedRectangle (-pointerThickness * 0.5f, -pointerLen, pointerThickness, pointerLen, pointerThickness * 0.4f);
-    g.setColour (juce::Colour (0xFF2A3038));
-    g.fillPath (pointer, juce::AffineTransform::rotation (angle).translated (center.x, center.y));
+    const float thumbRadius = trackHeight * 0.7f;
+    g.setColour (slider.findColour (juce::Slider::thumbColourId));
+    g.fillEllipse (sliderPos - thumbRadius,
+                   track.getCentreY() - thumbRadius,
+                   thumbRadius * 2.0f,
+                   thumbRadius * 2.0f);
+    g.setColour (juce::Colour (0xFF4F3914).withAlpha (0.85f));
+    g.drawEllipse (sliderPos - thumbRadius,
+                   track.getCentreY() - thumbRadius,
+                   thumbRadius * 2.0f,
+                   thumbRadius * 2.0f,
+                   1.0f);
 }
 
 void TrackStripComponent::setTrackName (const juce::String& name)
@@ -370,25 +371,42 @@ void TrackStripComponent::resized()
     gainSliderBounds = volumeSlider.getBounds();
 
     r.removeFromTop (2);
-    auto panRow = r.removeFromTop (34);
+    auto panRow = r.removeFromTop (18);
     panLabel.setBounds (panRow.removeFromLeft (34));
-    const int panSize = juce::jmin (32, panRow.getHeight());
-    panSlider.setBounds (panRow.removeFromLeft (panSize).withSizeKeepingCentre (panSize, panSize));
+    panSlider.setBounds (panRow.reduced (2, 0));
+    panSliderBounds = panSlider.getBounds();
 }
 
 void TrackStripComponent::mouseDown (const juce::MouseEvent&)
 {
+    isDragReorderActive = true;
     if (onSelected)
         onSelected (trackIndex);
 }
 
 void TrackStripComponent::mouseUp (const juce::MouseEvent& event)
 {
+    if (isDragReorderActive && onReorderDrag != nullptr)
+    {
+        const auto parentEvent = event.getEventRelativeTo (getParentComponent());
+        onReorderDrag (trackIndex, (int) std::round (parentEvent.position.y), true);
+    }
+    isDragReorderActive = false;
+
     if (event.mods.isPopupMenu())
     {
         if (onContextMenuRequested)
             onContextMenuRequested (trackIndex, this);
     }
+}
+
+void TrackStripComponent::mouseDrag (const juce::MouseEvent& event)
+{
+    if (! isDragReorderActive || onReorderDrag == nullptr)
+        return;
+
+    const auto parentEvent = event.getEventRelativeTo (getParentComponent());
+    onReorderDrag (trackIndex, (int) std::round (parentEvent.position.y), false);
 }
 
 void TrackStripComponent::updateGainReadout (float normalizedValue)
