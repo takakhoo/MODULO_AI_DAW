@@ -28,6 +28,7 @@ public:
 private:
     class PianoRollResizer;
     class TrackListResizer;
+    class StartupOverlay;
 
     enum class ImportType
     {
@@ -57,7 +58,8 @@ private:
     void showInstrumentMenu (int trackIndex);
     void showFxMenu (int trackIndex);
     void generateChordOptionsForSelection();
-    void handleChordOptionsResponse (uint64_t sourceClipId, const juce::var& response, const juce::String& rawResponse);
+    void handleChordOptionsResponse (uint64_t sourceClipId, const juce::var& response, const juce::String& rawResponse,
+                                     SessionController::ChordPlaybackStyle playbackStyle);
     void openPianoRollForClip (uint64_t clipId);
     void togglePianoRollForSelectedClip();
     void setPianoRollHeight (int newHeight);
@@ -67,6 +69,8 @@ private:
     void updateVerticalScrollBar();
     void handleTrackScroll (int newOffset);
     void showChordTrackMenu (int trackIndex, juce::Component* source);
+    void setMainUiVisible (bool shouldBeVisible);
+    void dismissStartupOverlay();
     void ensureRealchordsServer();
     bool pingRealchordsServer (int timeoutMs);
     void startRealchordsServer();
@@ -97,6 +101,7 @@ private:
     std::shared_ptr<juce::FileChooser> projectChooser;
     std::unique_ptr<juce::ChildProcess> realchordsProcess;
     bool realchordsLaunchAttempted = false;
+    std::unique_ptr<StartupOverlay> startupOverlay;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ReasonMainComponent)
 };

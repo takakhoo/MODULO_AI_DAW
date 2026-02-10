@@ -119,6 +119,104 @@ private:
     int startX = 0;
 };
 
+class ReasonMainComponent::StartupOverlay : public juce::Component,
+                                            private juce::Timer
+{
+public:
+    StartupOverlay()
+    {
+        splashImage = juce::ImageFileFormat::loadFrom (BinaryData::Modulo_Loading_1920x1080_png,
+                                                        BinaryData::Modulo_Loading_1920x1080_pngSize);
+
+        addAndMakeVisible (newProjectButton);
+        addAndMakeVisible (openProjectButton);
+
+        auto style = [] (juce::TextButton& b, juce::Colour fill)
+        {
+            b.setColour (juce::TextButton::buttonColourId, fill);
+            b.setColour (juce::TextButton::buttonOnColourId, fill.brighter (0.12f));
+            b.setColour (juce::TextButton::textColourOffId, juce::Colours::white.withAlpha (0.95f));
+            b.setColour (juce::TextButton::textColourOnId, juce::Colours::white);
+        };
+
+        style (newProjectButton, juce::Colour (0xCC7F5A17));
+        style (openProjectButton, juce::Colour (0xCC101010));
+
+        newProjectButton.setButtonText ("New Blank Project");
+        openProjectButton.setButtonText ("Open Existing Project");
+        newProjectButton.setEnabled (false);
+        openProjectButton.setEnabled (false);
+
+        newProjectButton.onClick = [this]
+        {
+            if (onNewBlankProject != nullptr)
+                onNewBlankProject();
+        };
+
+        openProjectButton.onClick = [this]
+        {
+            if (onOpenProject != nullptr)
+                onOpenProject();
+        };
+
+        startedAtMs = juce::Time::getMillisecondCounter();
+        startTimerHz (30);
+    }
+
+    std::function<void()> onNewBlankProject;
+    std::function<void()> onOpenProject;
+
+    void paint (juce::Graphics& g) override
+    {
+        g.fillAll (juce::Colours::black);
+
+        if (splashImage.isValid())
+            g.drawImageWithin (splashImage, 0, 0, getWidth(), getHeight(), juce::RectanglePlacement::centred);
+
+        g.setGradientFill (juce::ColourGradient (juce::Colours::transparentBlack, 0.0f, (float) getHeight() * 0.42f,
+                                                 juce::Colours::black.withAlpha (0.78f), 0.0f, (float) getHeight(), false));
+        g.fillRect (getLocalBounds());
+
+        g.setColour (juce::Colours::white.withAlpha (0.74f));
+        g.setFont (juce::FontOptions (12.5f));
+        const auto hint = buttonsEnabled ? "Choose how to begin" : "Preparing session...";
+        g.drawText (hint, 0, getHeight() - 142, getWidth(), 24, juce::Justification::centred);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced (24);
+        auto controls = area.removeFromBottom (96);
+        controls = controls.withSizeKeepingCentre (juce::jmin (560, controls.getWidth()), controls.getHeight());
+        controls.removeFromTop (8);
+
+        auto left = controls.removeFromLeft (controls.getWidth() / 2).reduced (8, 6);
+        auto right = controls.reduced (8, 6);
+        newProjectButton.setBounds (left);
+        openProjectButton.setBounds (right);
+    }
+
+private:
+    void timerCallback() override
+    {
+        const auto elapsedMs = juce::Time::getMillisecondCounter() - startedAtMs;
+        if (! buttonsEnabled && elapsedMs >= 900)
+        {
+            buttonsEnabled = true;
+            newProjectButton.setEnabled (true);
+            openProjectButton.setEnabled (true);
+            repaint();
+            stopTimer();
+        }
+    }
+
+    juce::Image splashImage;
+    juce::TextButton newProjectButton;
+    juce::TextButton openProjectButton;
+    uint32_t startedAtMs = 0;
+    bool buttonsEnabled = false;
+};
+
 ReasonMainComponent::ReasonMainComponent()
 {
     addAndMakeVisible (transportBar);
@@ -336,6 +434,21 @@ ReasonMainComponent::ReasonMainComponent()
     setSize (1100, 700);
     startTimerHz (30);
 
+    setMainUiVisible (false);
+
+    startupOverlay = std::make_unique<StartupOverlay>();
+    startupOverlay->onNewBlankProject = [this]
+    {
+        dismissStartupOverlay();
+    };
+    startupOverlay->onOpenProject = [this]
+    {
+        beginProjectAction (ProjectAction::open);
+    };
+    addAndMakeVisible (*startupOverlay);
+    startupOverlay->setBounds (getLocalBounds());
+    startupOverlay->toFront (false);
+
     ensureRealchordsServer();
 }
 
@@ -385,10 +498,19 @@ void ReasonMainComponent::resized()
 
     trackList.setVisibleTrackHeightOverride (timeline.getVisibleTrackHeight());
     updateVerticalScrollBar();
+
+    if (startupOverlay != nullptr && startupOverlay->isVisible())
+    {
+        startupOverlay->setBounds (getLocalBounds());
+        startupOverlay->toFront (false);
+    }
 }
 
 bool ReasonMainComponent::keyPressed (const juce::KeyPress& key)
 {
+    if (startupOverlay != nullptr && startupOverlay->isVisible())
+        return false;
+
     if (key == juce::KeyPress::spaceKey)
     {
         if (session.isRecording())
@@ -701,6 +823,8 @@ void ReasonMainComponent::beginProjectAction (ProjectAction action)
                                      {
                                          session.getEngine().getPropertyStorage().setDefaultLoadSaveDirectory ("reasonProject", file.getParentDirectory());
                                          refreshSessionState();
+                                         if (startupOverlay != nullptr && startupOverlay->isVisible())
+                                             dismissStartupOverlay();
                                      }
                                  });
 }
@@ -961,9 +1085,12 @@ void ReasonMainComponent::generateChordOptionsForSelection()
     }
 
     juce::AlertWindow prompt ("Generate Chords",
-                              "How many chord options do you want?",
+                              "Choose how many options and playback style.",
                               juce::AlertWindow::NoIcon);
     prompt.addTextEditor ("count", "5", "Options");
+    prompt.addComboBox ("style",
+                        juce::StringArray { "Block Chords", "Arpeggio" },
+                        "Playback");
     prompt.addButton ("Generate", 1, juce::KeyPress (juce::KeyPress::returnKey));
     prompt.addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
 
@@ -972,6 +1099,12 @@ void ReasonMainComponent::generateChordOptionsForSelection()
 
     int optionCount = prompt.getTextEditorContents ("count").getIntValue();
     optionCount = juce::jlimit (1, 16, optionCount);
+    int styleChoice = 1;
+    if (auto* styleBox = prompt.getComboBoxComponent ("style"))
+        styleChoice = styleBox->getSelectedId();
+    const auto playbackStyle = (styleChoice == 2)
+        ? SessionController::ChordPlaybackStyle::arpeggio
+        : SessionController::ChordPlaybackStyle::block;
 
     std::vector<SessionController::RealchordsNoteEvent> events;
     int endFrame = 0;
@@ -1009,7 +1142,7 @@ void ReasonMainComponent::generateChordOptionsForSelection()
     const auto baseUrl = getRealchordsBaseUrl();
     const auto startHint = getRealchordsStartHint();
 
-    std::thread ([this, payload, clipId, baseUrl, startHint]
+    std::thread ([this, payload, clipId, playbackStyle, baseUrl, startHint]
     {
         juce::URL url (baseUrl + "/generate");
         url = url.withPOSTData (payload);
@@ -1037,7 +1170,7 @@ void ReasonMainComponent::generateChordOptionsForSelection()
         const juce::String response = stream->readEntireStreamAsString();
         const juce::var parsed = juce::JSON::parse (response);
 
-        juce::MessageManager::callAsync ([this, clipId, parsed, response, statusCode]
+        juce::MessageManager::callAsync ([this, clipId, parsed, response, statusCode, playbackStyle]
         {
             isGeneratingChords = false;
             if (statusCode != 0 && statusCode != 200)
@@ -1047,12 +1180,13 @@ void ReasonMainComponent::generateChordOptionsForSelection()
                                                        "Realchords server returned HTTP " + juce::String (statusCode) + ".\n\nResponse:\n" + response);
                 return;
             }
-            handleChordOptionsResponse (clipId, parsed, response);
+            handleChordOptionsResponse (clipId, parsed, response, playbackStyle);
         });
     }).detach();
 }
 
-void ReasonMainComponent::handleChordOptionsResponse (uint64_t sourceClipId, const juce::var& response, const juce::String& rawResponse)
+void ReasonMainComponent::handleChordOptionsResponse (uint64_t sourceClipId, const juce::var& response, const juce::String& rawResponse,
+                                                      SessionController::ChordPlaybackStyle playbackStyle)
 {
     if (! response.isObject())
     {
@@ -1120,7 +1254,7 @@ void ReasonMainComponent::handleChordOptionsResponse (uint64_t sourceClipId, con
         return;
     }
 
-    if (session.createChordOptionTracks (sourceClipId, options))
+    if (session.createChordOptionTracks (sourceClipId, options, playbackStyle))
     {
         refreshSessionState();
     }
@@ -1334,6 +1468,34 @@ void ReasonMainComponent::showChordTrackMenu (int trackIndex, juce::Component* s
     }
 
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (source));
+}
+
+void ReasonMainComponent::setMainUiVisible (bool shouldBeVisible)
+{
+    transportBar.setVisible (shouldBeVisible);
+    trackList.setVisible (shouldBeVisible);
+    timeline.setVisible (shouldBeVisible);
+    chordInspector.setVisible (shouldBeVisible);
+    fxInspector.setVisible (shouldBeVisible);
+    verticalScrollBar.setVisible (shouldBeVisible);
+    trackListResizer->setVisible (shouldBeVisible);
+
+    const bool shouldShowPiano = shouldBeVisible && pianoRollVisible;
+    pianoRoll.setVisible (shouldShowPiano);
+    if (pianoRollResizer != nullptr)
+        pianoRollResizer->setVisible (shouldShowPiano);
+}
+
+void ReasonMainComponent::dismissStartupOverlay()
+{
+    if (startupOverlay == nullptr)
+        return;
+
+    setMainUiVisible (true);
+    startupOverlay->setVisible (false);
+    grabKeyboardFocus();
+    refreshSessionState();
+    resized();
 }
 
 bool ReasonMainComponent::isInterestedInFileDrag (const juce::StringArray& files)

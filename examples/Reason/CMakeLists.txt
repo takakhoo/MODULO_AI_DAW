@@ -54,7 +54,8 @@ juce_add_binary_data (${TARGET_NAME}BinaryData SOURCES
     resources/drum_loop.wav
     resources/synth_loop.wav
     resources/midi_arp.mid
-    resources/midi_arp_2.mid)
+    resources/midi_arp_2.mid
+    Modulo_Loading_1920x1080.png)
 
 target_compile_features(${TARGET_NAME} PRIVATE cxx_std_20)
 

@@ -1116,3 +1116,861 @@ python -m realchords.realjam.server --port 8080
 ### Notes / limitations
 - Very large chord-option counts can still be slow; if the server process crashes, the app will report the HTTP error or missing server.
 - Clip clipboard is in-memory only (clears on app restart).
+
+---
+
+## 2026-02-09 10:58
+
+### Goals for this milestone
+- Make external instrument state (Splice) persist when the plugin window is closed, so the selected instrument does not revert to default.
+- Show the current instrument/preset name on the track’s instrument button when the plugin reports it.
+
+### What changed and why
+- **Plugin window close now forces a state flush**: Some plugins don’t notify Tracktion that their internal state changed when presets are loaded. We now explicitly mark the plugin as changed and flush its state on window close, so program/preset changes are saved.
+- **Instrument button reflects plugin program name**: If an external plugin reports a current program name, we display that as the track’s instrument label; otherwise we fall back to the plugin name.
+- **Periodic instrument name refresh**: Track strips now poll the instrument name periodically to reflect in-plugin changes without rebuilding the whole UI.
+
+### Files updated
+- `examples/Reason/PluginWindow.cpp`
+  - On close, call `plugin.edit.pluginChanged(plugin)` before flushing state to force persistence of in-plugin preset changes.
+- `examples/Reason/SessionController.cpp`
+  - Instrument name now uses `ExternalPlugin::getCurrentProgramName()` when available; falls back to plugin name.
+- `examples/Reason/ReasonMainComponent.cpp`
+  - Added a periodic instrument-name refresh (every 15 timer ticks) to update the track button label without a full UI rebuild.
+
+### Commands run
+- `cmake --build build --target Reason`
+
+### What works now
+- Closing a plugin window saves its current state, so Splice preset choices persist.
+- Instrument button shows the plugin’s program name (when the plugin reports it).
+
+### Notes / limitations
+- If a plugin does not expose a program name, the button will still show the plugin name.
+
+---
+
+## 2026-02-09 11:04
+
+### Goals for this milestone
+- Stabilize Splice instrument preset persistence without causing crashes on app shutdown.
+- Keep the instrument label syncing to the plugin’s reported program name.
+
+### What changed and why
+- **Safer plugin state flush on close**: Moved the explicit “mark changed + flush state” to the user-initiated close path only. This keeps preset changes persistent but avoids potential shutdown crashes caused by touching Edit state in the window destructor.
+
+### Files updated
+- `examples/Reason/PluginWindow.cpp`
+  - `userTriedToCloseWindow()` now calls `plugin.edit.pluginChanged()` and `plugin.edit.flushPluginStateIfNeeded()` before closing.
+  - Removed `plugin.edit.pluginChanged()` from the window destructor to reduce shutdown crash risk.
+
+### Commands run
+- `cmake --build build --target Reason`
+
+### What works now
+- Splice preset changes should persist when the plugin window is closed.
+- Reduced risk of “quit unexpectedly” on shutdown tied to plugin window teardown.
+
+### Notes / limitations
+- If the plugin doesn’t expose program names, the instrument button will still show the plugin name.
+
+---
+
+## 2026-02-09 11:25
+
+### Goals for this milestone
+- Diagnose the crash seen when closing the Splice AU plugin window.
+- Stabilize AU editor teardown to avoid invalid NSView removal.
+
+### Root cause analysis (from crash log)
+- Crash triggered on the JUCE message thread when closing the plugin window.
+- Stack shows `AudioUnitPluginWindowCocoa::~AudioUnitPluginWindowCocoa()` → `NSViewAttachment::removeFromParent()` → `-[NSView removeFromSuperview]` → `BUG_IN_CLIENT_OF_LIBMALLOC_POINTER_BEING_FREED_WAS_NOT_ALLOCATED`.
+- This points to a content teardown ordering problem where the AU view is being detached after its native view reference has become invalid.
+
+### What changed and why
+- **Clear content before destroying editor**: `PluginWindow::setEditor` now calls `clearContentComponent()` before resetting the editor. This ensures the window no longer holds a stale content pointer while the AU editor is being destroyed.
+- **Avoid close-time state churn**: Removed `plugin.edit.pluginChanged()` and `flushPluginStateIfNeeded()` from `userTriedToCloseWindow()` to reduce plugin state work during AU teardown.
+
+### Files updated
+- `examples/Reason/PluginWindow.cpp`
+  - `setEditor()` clears the content component before `editor.reset()`.
+  - `userTriedToCloseWindow()` now only calls `plugin.windowState->closeWindowExplicitly()`.
+
+### Commands run
+- `rg -n "PluginWindow" examples/Reason/PluginWindow.cpp`
+- `sed -n '1,260p' examples/Reason/PluginWindow.cpp`
+- `rg -n "setContentNonOwned" modules/juce/modules/juce_gui_basics/windows`
+- `sed -n '70,170p' modules/juce/modules/juce_gui_basics/windows/juce_ResizableWindow.cpp`
+
+### Build/test status
+- Not rebuilt after this change yet.
+
+### What to verify next
+- Closing Splice AU windows no longer crashes.
+- Splice AU windows still open and function normally.
+
+---
+
+## 2026-02-09 14:10
+
+### Goals for this milestone
+- Ensure the track instrument button never shows “Untitled” and instead reflects a meaningful instrument name.
+- Narrow the instrument button and improve track strip UX clarity.
+- Make track control colors, gain UI, and transport controls match the requested visual language.
+- Show real-time MIDI notes while recording so a region appears as you play.
+
+### What changed and why
+- **Persistent instrument label fallback**: Track instrument names now use a stored per-track label when the plugin reports a placeholder name (e.g., “Untitled”). This ensures the instrument button displays a meaningful label even when plugins don’t expose program names.
+- **Track-name collision guard**: If a plugin reports a name that matches the track name (e.g., “Untitled”), we treat it as a placeholder and fall back to the stored label or plugin type.
+- **Instrument label propagation on duplication**: When duplicating an instrument plugin (e.g., for chord option tracks), the stored instrument label is copied to the new track to keep the instrument button consistent.
+- **Track strip visual updates**: Instrument button width reduced; mute/solo buttons are filled with light blue/neon yellow; AI button removed; gain label + live dB readout + 0 dB marker added; slider height increased.
+- **Transport updates**: “Chords 5x” renamed to “Generate Chords”; play/stop/record switched to triangle/square/circle shape buttons.
+- **Recording preview**: A live MIDI preview clip is drawn while recording so notes appear immediately in the timeline.
+
+### Files updated
+- `examples/Reason/SessionController.cpp`
+  - Added `reasonInstrumentLabel` ValueTree property handling.
+  - Stored a robust instrument label on insert and reused it when program names are placeholders.
+  - Copied instrument labels when duplicating instrument plugins.
+- `examples/Reason/TrackStripComponent.cpp`
+  - Reduced instrument button width.
+  - Gain label, dB readout, 0 dB marker, thicker slider area, and mute/solo color updates.
+- `examples/Reason/TrackStripComponent.h`
+  - Track strip UI elements include gain labels and readout.
+- `examples/Reason/TransportBarComponent.h`
+  - Transport buttons now use shape-based play/stop/record.
+  - Chords button label updated to “Generate Chords”.
+- `examples/Reason/TransportBarComponent.cpp`
+  - Shape button geometry + colors, smaller transport sizing.
+- `examples/Reason/SessionController.h`
+  - Recording preview state for real-time MIDI drawing.
+
+### Commands run
+- `rg -n "Instrument|instrument" examples/Reason/TrackStripComponent.cpp examples/Reason/SessionController.cpp`
+- `sed -n '1,220p' examples/Reason/TrackStripComponent.cpp`
+- `sed -n '280,380p' examples/Reason/SessionController.cpp`
+- `sed -n '1,260p' examples/Reason/TransportBarComponent.cpp`
+
+### Build/test status
+- Not rebuilt after these changes yet.
+
+### What to verify next
+- Instrument button shows a meaningful name (e.g., “Splice INSTRUMENT” or the selected AU name) instead of “Untitled”.
+- Mute/Solo buttons are clearly filled with the requested colors on every track.
+- Gain readout updates live, 0 dB marker is visible, and slider feels easier to grab.
+- Transport buttons render as triangle/square/circle and “Generate Chords” label is correct.
+- While recording MIDI, a clip appears and notes draw in real time.
+
+---
+
+## 2026-02-09 15:45
+
+### Goals for this milestone
+- Tighten the gain UI range and sizing to match -10 dB to +6 dB with a shorter slider.
+- Ensure the MIDI input label reflects the selected device and recording actually captures notes.
+- Make tempo edits apply globally at time 0 and expose a metronome toggle.
+- Remove stray non-ASCII symbols in the chord inspector header.
+
+### What changed and why
+- **Gain range + sizing**: Mapped normalized gain to -10 dB .. +6 dB and capped the slider width so it doesn’t span the full row.
+- **Thicker gain track**: Custom slider look-and-feel draws a thicker filled track and thumb for better visibility.
+- **MIDI input label refresh**: The transport bar now refreshes the MIDI input label in the main timer tick.
+- **Recording capture fix**: The selected MIDI device now has `recordingEnabled` set explicitly, so notes are actually recorded and show up in clips.
+- **Tempo consistency + metronome**: Tempo and time-signature lookups now use the edit’s time 0 entry (project-wide), and the metronome toggle is wired to `edit->clickTrackEnabled`.
+- **Chord inspector clean-up**: Replaced em dash characters with ASCII to avoid “â€”” artifacts.
+
+### Files updated
+- `examples/Reason/SessionController.cpp`
+  - Gain dB mapping now uses -10..+6 range.
+  - Selected MIDI device explicitly sets `recordingEnabled = true` before record.
+  - Tempo/time-signature getters now use time 0.
+  - Metronome flag wired to `edit->clickTrackEnabled`.
+- `examples/Reason/TrackStripComponent.cpp`
+  - Gain slider uses custom look-and-feel and capped width.
+- `examples/Reason/TrackStripComponent.h`
+  - Added slider look-and-feel holder.
+- `examples/Reason/ReasonMainComponent.cpp`
+  - MIDI input label updated every timer tick.
+- `examples/Reason/TransportBarComponent.cpp`
+  - Tempo label editable on double-click.
+- `examples/Reason/ChordInspectorComponent.cpp`
+  - Replaced em dashes with ASCII.
+
+### Commands run
+- `rg -n "GainSliderLookAndFeel|kMinTrackDb|tempoLabel|recordingEnabled" examples/Reason/SessionController.cpp examples/Reason/TrackStripComponent.cpp examples/Reason/TransportBarComponent.cpp`
+- `sed -n '140,220p' examples/Reason/TrackStripComponent.cpp`
+- `sed -n '1840,1950p' examples/Reason/SessionController.cpp`
+
+### Build/test status
+- Not rebuilt after these changes yet.
+
+### What to verify next
+- Gain slider feels shorter and maps -10 dB .. +6 dB with readable dB values.
+- MIDI input button reflects the selected device name (e.g., Casio).
+- Recording now produces MIDI notes in the recorded clip and the region persists after stopping.
+- Tempo edits on the label change the project tempo and grid/ruler align with bars.
+- Metronome toggles on/off and clicks at the correct tempo.
+
+---
+
+## 2026-02-09 16:25
+
+### Goals for this milestone
+- Stop instrument buttons from showing “Untitled” and prefer a meaningful plugin label.
+- Make the gain control visually tighter (shorter slider, thicker track).
+- Ensure tempo edits trigger immediate UI refresh of grid/ruler.
+- Keep MIDI input selection stable so the top bar shows the chosen device name.
+
+### What changed and why
+- **Instrument label fallback**: External plugin labels now fall back to plugin name when the program name is a placeholder, and placeholder detection treats any label containing “untitled” as invalid. This prevents “Untitled” from leaking into the instrument button.
+- **Track rename guard**: The track name is only auto-set to the new instrument name if that label is meaningful (not “Instrument”, “No Instrument”, or placeholder).
+- **Gain control sizing**: The instrument button width was reduced and the gain slider width shortened to avoid spanning the full row. The slider track thickness was increased for easier visibility.
+- **Tempo UI refresh**: Tempo edits now force the timeline and piano roll to repaint so grid lines update immediately.
+- **MIDI input selection stability**: The update loop now ensures a valid MIDI input is selected before updating the transport bar label.
+
+### Files updated
+- `examples/Reason/SessionController.cpp`
+  - Placeholder program-name detection now treats any label containing “untitled” as invalid.
+  - External plugin label fallback now uses the plugin name when program name and description are placeholders.
+- `examples/Reason/TrackStripComponent.cpp`
+  - Instrument button width reduced and gain slider width shortened.
+  - Gain slider track thickness increased.
+  - Placeholder instrument label detection now catches “untitled” anywhere in the string.
+- `examples/Reason/ReasonMainComponent.cpp`
+  - Tempo edits now repaint the timeline and piano roll.
+  - Update loop now ensures MIDI input selection before refreshing the label.
+  - Auto-rename to instrument name now skips placeholder labels.
+
+### Commands run
+- `ls`
+- `rg -n "Instrument|Untitled|AI" examples/Reason/TrackStripComponent.*`
+- `sed -n '1,240p' examples/Reason/TrackStripComponent.cpp`
+- `rg -n "setInstrumentName|instrumentButton" examples/Reason`
+- `sed -n '1,260p' examples/Reason/TrackListComponent.cpp`
+- `rg -n "instrument" examples/Reason/SessionController.cpp examples/Reason/ReasonMainComponent.cpp examples/Reason/PluginWindow.cpp`
+- `sed -n '300,460p' examples/Reason/SessionController.cpp`
+- `sed -n '1,120p' examples/Reason/SessionController.cpp`
+- `rg -n "insertInstrument|kInstrumentLabelId" examples/Reason/SessionController.cpp`
+- `sed -n '1590,1685p' examples/Reason/SessionController.cpp`
+- `sed -n '420,520p' examples/Reason/ReasonMainComponent.cpp`
+- `rg -n "refreshSessionState" -n examples/Reason/ReasonMainComponent.cpp`
+- `sed -n '1100,1180p' examples/Reason/ReasonMainComponent.cpp`
+- `rg -n "SelectedMidiInput" -n examples/Reason/SessionController.cpp`
+- `sed -n '230,320p' examples/Reason/SessionController.cpp`
+- `rg -n "record" examples/Reason`
+- `sed -n '780,1120p' examples/Reason/SessionController.cpp`
+- `sed -n '80,140p' examples/Reason/SessionController.cpp`
+- `sed -n '1,180p' modules/tracktion_engine/playback/tracktion_TransportControl.h`
+- `rg -n "Tempo|BPM|bar|beat" examples/Reason/TimelineComponent.* examples/Reason/PianoRollComponent.*`
+- `sed -n '600,720p' examples/Reason/TimelineComponent.cpp`
+
+### Build/test status
+- Not rebuilt after these changes yet.
+
+### What to verify next
+- Instrument button shows a stable label (e.g., “Splice INSTRUMENT” or the chosen AU name), not “Untitled”.
+- Gain slider is visibly thicker and shorter.
+- Tempo edits update grid lines immediately in the timeline and piano roll.
+- MIDI input label in the top bar reflects the selected device.
+
+## 2026-02-09 16:43
+### Summary
+- Fixed build error by exposing `SessionController::ensureMidiInputSelection()` to callers.
+
+### Changes
+- `examples/Reason/SessionController.h`
+  - Moved `ensureMidiInputSelection()` declaration to public API so `ReasonMainComponent` can call it.
+
+### Commands run
+- `rg -n "ensureMidiInputSelection" -n examples/Reason/SessionController.h`
+- `sed -n '160,250p' examples/Reason/SessionController.h`
+
+### Build/test status
+- Not rebuilt after this header visibility fix yet.
+
+### What to verify next
+- `cmake --build build --target Reason` now succeeds without the private-member error.
+
+## 2026-02-09 16:55
+### Summary
+- Recording fix: ensure MIDI input targets and record-enabled flags survive playback restart before recording begins.
+
+### Changes
+- `examples/Reason/SessionController.cpp`
+  - Moved `edit->restartPlayback()` to occur immediately after `ensureContextAllocated()` and before setting input targets/record-enabled flags, and removed the trailing restart. This keeps `InputDeviceInstance::recordEnabled` from being reset before recording starts, which was preventing MIDI clips from being created.
+
+### Commands run
+- `rg -n "record|Recording|preview" examples/Reason/SessionController.cpp`
+- `sed -n '80,150p' examples/Reason/SessionController.cpp`
+- `sed -n '820,980p' examples/Reason/SessionController.cpp`
+- `sed -n '1840,1945p' examples/Reason/SessionController.cpp`
+- `rg -n "allowRecordingIfNoInputsArmed|record \\(" modules/tracktion_engine/playback/tracktion_TransportControl.cpp`
+- `sed -n '1420,1465p' modules/tracktion_engine/playback/tracktion_TransportControl.cpp`
+- `rg -n "areAnyInputsRecording" -n modules/tracktion_engine/playback/tracktion_TransportControl.cpp`
+- `sed -n '1000,1060p' modules/tracktion_engine/playback/tracktion_TransportControl.cpp`
+- `rg -n "liveNotes" -n modules/tracktion_engine/playback/devices/tracktion_MidiInputDevice.cpp`
+- `sed -n '1020,1065p' modules/tracktion_engine/playback/devices/tracktion_MidiInputDevice.cpp`
+- `sed -n '180,260p' modules/tracktion_engine/playback/devices/tracktion_InputDevice.cpp`
+- `rg -n "setTarget\\(" -g"*.cpp" examples/Reason modules/tracktion_engine`
+- `rg -n "togglePlay|toggleRecord" -n examples/common/Utilities.h`
+- `sed -n '160,220p' examples/common/Utilities.h`
+
+### Build/test status
+- Not rebuilt after this recording fix yet.
+
+### What to verify next
+- Recording now creates a persistent MIDI clip with notes after stopping (Record button or Space).
+
+## 2026-02-09 17:35
+### Summary
+- Realchords server reliability: make the app consistently target the batch server, and auto-start it from the correct project root even when launched from the app bundle.
+
+### Changes
+- `examples/Reason/ReasonMainComponent.cpp`
+  - Added helpers to derive `REALCHORDS_HOST/PORT`, base URL, and a start command hint.
+  - Replaced hard-coded `http://127.0.0.1:8090` with the derived base URL for `/generate` and `/health`.
+  - Improved error messaging to show the exact batch-server command to run.
+  - Made auto-start robust by locating the project root via current executable and working directory.
+  - Passed host/port environment vars into the batch-server child process.
+- `tools/realchords/realchords_batch_server.py`
+  - Added `REALCHORDS_HOST`/`REALCHORDS_PORT` environment override for `app.run(...)` to match the app configuration.
+
+### Commands run
+- `rg -n "realchords|/generate|8090|ensureRealchordsServer" examples/Reason/ReasonMainComponent.cpp tools/realchords/realchords_batch_server.py`
+- `sed -n '840,1120p' examples/Reason/ReasonMainComponent.cpp`
+- `sed -n '1,240p' tools/realchords/realchords_batch_server.py`
+
+### Build/test status
+- Not rebuilt after this server-start and URL fix yet.
+
+### What to verify next
+- Running the batch server via the provided command results in successful chord generation.
+
+## 2026-02-09 18:05
+### Summary
+- Tempo and key signature are now editable directly from the transport bar (double-click).
+
+### Changes
+- `examples/Reason/TransportBarComponent.h`
+  - Added `mouseDoubleClick` override and a helper for key signature menus.
+- `examples/Reason/TransportBarComponent.cpp`
+  - Tempo label now enters edit mode on double click.
+  - Key signature label opens a drop-down menu (major/minor choices) instead of raw text edit.
+  - Double-click handling for tempo/time signature/key is centralized to ensure consistent behavior.
+
+### Commands run
+- `rg -n "Tempo|Key|TransportBarComponent" examples/Reason/TransportBarComponent.* examples/Reason/ReasonMainComponent.cpp examples/Reason/SessionController.*`
+- `sed -n '1,220p' examples/Reason/TransportBarComponent.cpp`
+
+### Build/test status
+- Not rebuilt after this transport-bar edit yet.
+
+### What to verify next
+- Double-clicking tempo opens the editor and updates BPM when submitted.
+- Double-clicking key opens the menu and updates the project key.
+
+## 2026-02-09 18:20
+### Summary
+- Make tempo/key edits actually stick by wiring double-click handlers to the labels and preventing the timer from overwriting active edits.
+
+### Changes
+- `examples/Reason/TransportBarComponent.cpp`
+  - Added mouse listeners for tempo/time signature labels so double-clicks reach the transport bar handler.
+  - Prevented `setTempoText` and `setTimeSignatureText` from overwriting edits while the label is being edited.
+  - Ensured labels intercept mouse clicks explicitly for reliable double-click behavior.
+
+### Commands run
+- `rg -n "Tempo|Key|TransportBarComponent" examples/Reason/TransportBarComponent.*`
+- `sed -n '1,220p' examples/Reason/TransportBarComponent.cpp`
+
+### Build/test status
+- Not rebuilt after this fix yet.
+
+### What to verify next
+- Double-click tempo now opens the editor and keeps the typed BPM.
+- Double-click key opens the menu reliably.
+
+## 2026-02-09 19:10
+### Summary
+- MIDI recording persistence issue finally resolved through a full debug cycle.
+- Final state: MIDI recording now produces persistent clips/regions after stop.
+
+### User-facing symptom (exact)
+- Pressing Record created a temporary-looking MIDI indicator while recording.
+- After stopping, no region remained visible.
+- MIDI input monitoring was inconsistent at startup (often needed touching Record once).
+
+### Why this was hard
+- Multiple overlapping failure modes were present:
+  1) **Monitoring/routing timing** issues at app startup and after device changes.
+  2) **Record-stop path ambiguity** (toggle helper behavior vs direct transport control).
+  3) **Clip finalization failures** in this app path (Tracktion recorded state toggled, but no clip materialized).
+  4) **Timestamp domain mismatch** from live MIDI FIFO events (in some runs) producing pathological clip times.
+
+### Full debugging sequence (what we tried and learned)
+1. **Initial transport-path fixes**
+   - Updated recording logic away from the demo helper path where needed.
+   - Ensured stop path used non-discard semantics.
+   - Result: recording state toggled, but clips still missing.
+
+2. **Routing stability fixes**
+   - Added explicit live MIDI routing updates on:
+     - app/edit init,
+     - track selection changes,
+     - MIDI input selection changes.
+   - Switched target assignment to `edit->getAllInputDevices()`/instance-based logic.
+   - Result: input monitoring became more reliable, but clip persistence still inconsistent.
+
+3. **Deterministic diagnostics**
+   - Added structured recording logs to a stable path:
+     - `~/ReasonLogs/record_debug.log`
+   - Logged:
+     - selected MIDI device and armed tracks,
+     - prepare/start/stop state transitions,
+     - routing outcomes,
+     - per-track MIDI clip counts after stop.
+   - Critical finding from logs:
+     - `toggleRecord() started/stopped` happened correctly,
+     - but clip counts remained zero in failing runs:
+       - `Track0:midiClips=0 | Track1:midiClips=0 | Track2:midiClips=0`.
+
+4. **Fallback clip commit path**
+   - Implemented a safe fallback:
+     - if stop completes and no new MIDI clip appears, use captured live note preview to create a real `MidiClip`.
+   - Logged fallback events:
+     - `fallback committed MIDI clip on track 0 with notes=...`.
+   - This proved note capture existed even when native finalization failed.
+
+5. **Timestamp sanitization (final blocker)**
+   - Found pathological timestamps in logs:
+     - e.g. `clipEnd=2717633957999.999`.
+   - Root cause:
+     - occasional MIDI message timestamps arrived in a non-transport clock domain.
+   - Fix:
+     - sanitize incoming note event timestamps during recording preview capture,
+     - clamp/normalize invalid note-off ordering,
+     - clamp final clip end to a sane range near stop time.
+   - Result:
+     - fallback-created clips now land in sane timeline positions and persist.
+
+### Key evidence from logs
+- Before final fixes:
+  - record toggled on/off correctly,
+  - clip snapshot after stop remained zero.
+- After fallback + sanitization:
+  - `fallback committed MIDI clip on track 0 with notes=8`
+  - `toggleRecord() clip snapshot after stop: Track0:midiClips=1 ...`
+  - later runs showed repeated persistent increments.
+
+### Files changed (recording debug/fix cycle)
+- `examples/Reason/SessionController.h`
+  - Added helper declarations for recording fallback and instance lookup.
+- `examples/Reason/SessionController.cpp`
+  - Reworked start/stop recording flow to avoid discard behavior.
+  - Added robust MIDI input/target routing refresh.
+  - Added persistent diagnostics logging (`~/ReasonLogs/record_debug.log`).
+  - Added fallback clip commit from live recording preview when no clip is materialized.
+  - Added timestamp sanitation and clip time clamping to prevent off-screen/invalid clip placement.
+
+### Commands run during the cycle
+- `rg -n "record|Recording|toggleRecord|stop\\(|setTarget|getAllInputDevices|isRecordingActive" examples/Reason/SessionController.cpp examples/common/Utilities.h modules/tracktion_engine`
+- `cmake --build build --target Reason`
+- `tail -n 120 ~/ReasonLogs/record_debug.log`
+- `tail -n 80 ~/ReasonLogs/record_debug.log`
+- `tail -n 60 ~/ReasonLogs/record_debug.log`
+
+### Build/test status
+- Build succeeds after final timestamp sanitation and fallback clip placement fixes.
+- Runtime logs confirm post-stop MIDI clip creation in successful runs.
+
+### What is now different
+- Recording no longer depends on temporary UI preview only.
+- When native clip finalization fails, a real MIDI clip is still committed from captured notes.
+- Invalid MIDI timestamp domains no longer produce absurd clip ranges/off-screen placement.
+
+### Follow-up cleanup (recommended)
+- Keep logging for one more validation session, then gate/remove verbose debug logs.
+- Once fully stable, either:
+  - keep fallback commit as a safety net, or
+  - replace with canonical Tracktion-only finalize path if root cause is fully eliminated upstream.
+
+## 2026-02-09 22:25 - Timeline UX pass (bars ruler, MIDI edge resize, multi-clip drag)
+
+### Goal
+- Align timeline interactions with musical editing workflow:
+  - ruler should show bars/measures instead of raw seconds,
+  - MIDI clips should be quickly shorten-able from the edge,
+  - multiple clips should be selectable and movable together (including across tracks).
+
+### Implemented changes
+1. **Top timeline ruler now shows musical bars**
+   - Replaced second-based ruler ticks/labels with bar/beat ticks driven by `Edit::tempoSequence`.
+   - Major ticks now represent bar starts and labels are `Bar N`.
+   - This visually aligns the ruler with the existing beat/grid lines in clip lanes.
+
+2. **MIDI clip edge-resize interaction**
+   - Added hover detection near a MIDI clip's right edge.
+   - Cursor changes to horizontal-resize when on the edge handle.
+   - Mouse drag on that edge now previews and commits clip length changes on mouse-up.
+   - Added `SessionController::resizeClipLength` to commit the resize through Tracktion clip APIs.
+
+3. **Multi-selection + group move for clips**
+   - Added additive selection (`Shift`/`Cmd` click) for clips in timeline.
+   - Preserved a primary selected clip (`selectedClipId`) for existing keyboard/editor flows.
+   - Dragging a selected clip now moves all selected clips together, preserving relative offsets.
+   - Vertical drag applies a track delta so selected clips can be moved across tracks as a group.
+
+### Technical notes
+- New timeline drag state tracks:
+  - original start times per selected clip,
+  - original track index per selected clip,
+  - shared time offset and track delta while dragging.
+- Group-move logic clamps time to `>= 0` and clamps target tracks to valid track index range.
+- Resize uses a minimum non-zero clip length to avoid zero-length invalid clips.
+
+### Files changed
+- `examples/Reason/TimelineComponent.h`
+  - Added multi-select state, resize state, hover/edge helper declarations, and mouse move/exit handling.
+- `examples/Reason/TimelineComponent.cpp`
+  - Implemented bars-based ruler drawing.
+  - Implemented MIDI right-edge hover/resize interaction.
+  - Implemented additive multi-selection and group drag/move behavior.
+  - Updated clip drawing to indicate selection set and right-edge handle for MIDI clips.
+- `examples/Reason/SessionController.h`
+  - Added `resizeClipLength (uint64_t clipId, double newLengthSeconds)`.
+- `examples/Reason/SessionController.cpp`
+  - Implemented `resizeClipLength` using clip `setLength`.
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: build successful (`Reason` target links successfully).
+
+## 2026-02-09 22:40 - Clip trim behavior correction (no MIDI note shift)
+
+### User-reported issue
+- MIDI clip resize only worked on the right edge.
+- Shortening from the right shifted note content, which felt wrong for trim behavior.
+
+### Fix
+- Updated resize semantics to preserve clip sync while changing bounds, so trimming now cuts visible content instead of moving note timing.
+- Added left-edge trim support for MIDI clips (in addition to right-edge trim).
+- Added preview/commit support for resizing both start and end clip bounds.
+
+### Technical details
+- `SessionController::resizeClipLength` now uses sync-preserving resize.
+- Added `SessionController::resizeClipRange (clipId, newStartSeconds, newLengthSeconds)` for two-sided trimming.
+- Timeline now detects both left and right edge handles and commits through `resizeClipRange`.
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: successful build after trim behavior fixes.
+
+## 2026-02-09 23:05 - DAW UI polish + piano-roll lasso multi-select
+
+### UI polish pass requested
+- Goal: make the top transport area feel more "DAW-like" (metallic/futuristic), improve button readability, and consolidate live transport info in a single display area.
+
+### What changed
+1. **Top bar visual redesign**
+   - Added metallic/chrome-style wells behind transport/action buttons.
+   - Added a dedicated "screen" panel look in the center with neon-blue accent border.
+   - Increased `Generate Chords` button width so label is no longer squished.
+   - Refined button color palettes (project/import/plugins/settings/metronome/MIDI/chords) for stronger contrast.
+
+2. **Unified live info display area**
+   - Reworked top-bar layout so time, bars/beats, BPM, time signature, and key all live inside one centered display cluster.
+   - Existing update flow remains live (real-time updates from `updateTimeDisplay()`).
+
+3. **Record status light**
+   - Added a blinking red indicator light beside the record button when recording is active.
+   - Blink rate is timer-driven and only active during record.
+
+4. **Piano roll lasso multi-selection**
+   - Added drag-lasso selection in note grid (click-drag empty area to box-select notes).
+   - Supports additive lasso (`Cmd`/`Shift` held).
+   - Selection rectangle is rendered during drag.
+   - Clicking an already-selected note now preserves multi-selection, enabling immediate group move/resize.
+   - Delete now removes all selected notes when multiple are selected.
+
+### Files changed
+- `examples/Reason/TransportBarComponent.h`
+  - Added timer hook, style helper, record blink state, display panel state.
+- `examples/Reason/TransportBarComponent.cpp`
+  - Added metallic/3D-ish drawing treatment, display-panel styling, updated layout widths, record blink indicator.
+- `examples/Reason/PianoRollComponent.h`
+  - Added lasso state and helper declaration.
+- `examples/Reason/PianoRollComponent.cpp`
+  - Added lasso-select interaction and rendering.
+  - Preserved multi-selection when clicking selected notes.
+  - Added multi-delete for selected notes.
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: successful build with new transport UI and piano-roll selection behavior.
+
+## 2026-02-09 23:20 - Live MIDI monitoring recovery guard
+
+### Issue observed
+- MIDI keyboard appeared connected in UI, but playing keys produced no sound in some runs until additional actions (e.g. touching record/other state changes).
+
+### Fix
+- Added explicit live MIDI routing refresh entry point:
+  - `SessionController::refreshMidiLiveRouting()`.
+- Called this periodically from `ReasonMainComponent::timerCallback()` (light-touch cadence) so device/routing state is re-applied and monitoring remains audible after reconnects/state drift.
+
+### Files changed
+- `examples/Reason/SessionController.h`
+  - Added `refreshMidiLiveRouting()`.
+- `examples/Reason/SessionController.cpp`
+  - Implemented `refreshMidiLiveRouting()` via existing routing path.
+- `examples/Reason/ReasonMainComponent.cpp`
+  - Added periodic `session.refreshMidiLiveRouting()` call in timer loop.
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: successful build after MIDI live-monitoring guard patch.
+
+## 2026-02-09 23:45 - MIDI monitor regression follow-up (stability rollback + safer reroute)
+
+### Issue observed
+- After the first monitoring guard, live MIDI pass-through was still unstable in some sessions.
+- Root cause was linked to over-aggressive routing refresh behavior.
+
+### Fix
+- Removed aggressive continuous routing refresh behavior from the main timer path.
+- Kept routing refresh as a **one-shot** when MIDI device selection/state changes.
+- Preserved normal routing calls on explicit user operations (track selection / device selection / edit load).
+- Kept additional logging context for routing diagnostics.
+
+### Files changed
+- `examples/Reason/ReasonMainComponent.h`
+  - Added `lastKnownMidiInputName` state for device-change detection.
+- `examples/Reason/ReasonMainComponent.cpp`
+  - Removed periodic force-refresh behavior.
+  - Added one-shot `session.refreshMidiLiveRouting()` when MIDI input name changes.
+- `examples/Reason/SessionController.cpp`
+  - Kept stable live-routing flow and logging enhancements from regression debugging.
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: successful build.
+
+## 2026-02-09 23:58 - Piano roll interaction polish pass
+
+### Requested improvements
+- Smoother note movement.
+- Square notes instead of rounded.
+- Velocity-based note color representation.
+- Real-time playhead updates in piano roll.
+- Horizontal zoom in piano roll.
+- Set playback position directly inside piano roll.
+
+### Implemented
+1. **Smooth drag/resize feel**
+   - Removed quantized stepping during drag preview for move/resize.
+   - Notes now move continuously while dragging.
+
+2. **Square notes**
+   - Replaced rounded note drawing with rectangular note blocks and square outlines.
+
+3. **Velocity color mapping**
+   - Extended `SessionController::MidiNoteInfo` to include `velocity`.
+   - Populated velocity from `MidiNote`.
+   - Piano roll now colors notes based on velocity (with selected-note highlight overlay behavior).
+
+4. **Playhead sync in piano roll**
+   - Added timer-driven repaint to keep playhead visually in sync during playback.
+
+5. **Horizontal zoom + playback position control**
+   - Added `mouseMagnify` handling for pinch zoom.
+   - Click in piano roll/ruler now updates transport cursor position.
+
+### Files changed
+- `examples/Reason/SessionController.h`
+  - Added `velocity` field to `MidiNoteInfo`.
+- `examples/Reason/SessionController.cpp`
+  - Populated `MidiNoteInfo::velocity` in `getMidiNotesForClip`.
+- `examples/Reason/PianoRollComponent.h`
+  - Added timer/magnify support declarations.
+- `examples/Reason/PianoRollComponent.cpp`
+  - Added timer repaint loop.
+  - Added smoother drag preview behavior.
+  - Added square/velocity-aware note rendering.
+  - Added cursor-position click behavior.
+  - Added magnify-based horizontal zoom.
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: successful build after piano roll polish changes.
+
+## 2026-02-10 00:30 - Modulo branding pass + transport/menu restructuring
+
+### Goals
+- Complete product rename from "Reason" (user-facing) to "Modulo" without destabilizing project internals.
+- Reclaim top-bar space by reducing oversized buttons.
+- Improve transport information readability and centered layout.
+
+### Implemented
+1. **Top action menu simplification**
+   - Replaced separate `Project` + `Import` controls with a single compact `File` button.
+   - `File` menu now includes New/Open/Save/Save As + Import Audio/MIDI.
+
+2. **Settings consolidation**
+   - Removed standalone `Plugins` button from transport.
+   - Moved plugin-manager access into `Settings` menu alongside device settings.
+
+3. **Centered transport display improvements**
+   - Reworked panel layout into deterministic left/center/right lanes to avoid overlap.
+   - Kept panel centered and visually balanced.
+   - Time display upgraded to millisecond precision (`MM:SS.mmm`).
+
+4. **Chord inspector readability + playback-follow**
+   - Increased list row readability.
+   - Added active-chord highlight synced to current transport time.
+   - Auto-scrolls chord list to keep active chord visible.
+
+### Files changed
+- `examples/Reason/TransportBarComponent.h/.cpp`
+- `examples/Reason/ReasonMainComponent.h/.cpp`
+- `examples/Reason/ChordInspectorComponent.h/.cpp`
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: successful build after transport/chord inspector layout updates.
+
+## 2026-02-10 01:10 - App identity rename to Modulo + icon integration
+
+### Goals
+- Set macOS app bundle identity/icon to Modulo.
+- Preserve existing source structure and target stability.
+
+### Implemented
+1. **Bundle identity**
+   - Updated bundle/product identity to Modulo:
+     - `PRODUCT_NAME "Modulo"`
+     - `BUNDLE_ID "com.takakhoo.modulo"`
+     - `MACOSX_BUNDLE_BUNDLE_NAME "Modulo"`
+
+2. **Dock icon**
+   - Added custom icon source: `examples/Reason/Modulo_AppIcon_1024.png` via JUCE CMake `ICON_BIG`.
+
+3. **Runtime name**
+   - Updated application/window name strings from `Reason` to `Modulo`.
+
+4. **Engine label alignment**
+   - Updated Tracktion engine app name string to `"Modulo"` for consistent settings identity.
+
+### Files changed
+- `examples/Reason/CMakeLists.txt`
+- `examples/Reason/Reason.cpp`
+- `examples/Reason/SessionController.h`
+
+### Validation
+- Built app bundle now outputs as:
+  - `build/examples/Reason/Reason_artefacts/Modulo.app`
+- `Info.plist` verified:
+  - `CFBundleName = Modulo`
+  - `CFBundleDisplayName = Modulo`
+  - `CFBundleExecutable = Modulo`
+  - `CFBundleIdentifier = com.takakhoo.modulo`
+
+## 2026-02-10 01:35 - Plugin inventory recovery after rename
+
+### Issue observed
+- After app identity rename, external instrument/plugin choices appeared reduced.
+- Root cause: plugin scan cache moved to a new settings domain (`Modulo`) while previous scans lived under `Reason`.
+
+### Fix
+- Added startup migration path:
+  - If current known plugin list lacks external plugins, load legacy `Reason/Settings.xml` plugin list key (`knownPluginList`/`knownPluginList64`) and persist into current settings.
+  - Guarded migration to avoid clobbering a valid existing plugin database.
+
+### Files changed
+- `examples/Reason/SessionController.cpp`
+
+### Validation
+- Build successful.
+- Existing external plugin availability restored through migrated known-plugin-list state.
+
+## 2026-02-10 02:00 - Modulo startup/launch experience
+
+### Goals
+- Introduce branded startup screen using custom artwork.
+- Gate DAW entry through explicit launch choices.
+
+### Implemented
+1. **Startup overlay component**
+   - Added full-window startup overlay rendering:
+     - `examples/Reason/Modulo_Loading_1920x1080.png`
+   - Added two launch actions:
+     - `New Blank Project`
+     - `Open Existing Project`
+   - Added short "loading" enable delay for buttons.
+
+2. **Launch flow control**
+   - Main DAW UI remains hidden at app start.
+   - DAW becomes visible only after startup choice.
+   - Startup overlay bounds fixed to avoid first-frame zero-size black window.
+
+3. **Open-existing-project UX polish**
+   - Keeps startup screen visible while file chooser is open.
+   - Dismisses startup overlay only after successful project open.
+   - Canceling file chooser keeps user on startup screen.
+
+4. **Duplicate title cleanup**
+   - Removed redundant text rendering so image typography remains authoritative.
+
+### Files changed
+- `examples/Reason/ReasonMainComponent.h/.cpp`
+- `examples/Reason/CMakeLists.txt` (added loading image to `BinaryData`)
+
+### Validation
+- Build command: `cmake --build /Users/takakhoo/Dev/tracktion/tracktion_engine/build --target Reason`
+- Result: successful build with startup overlay/flow changes.
+
+## 2026-02-10 02:40 - Chord playback style controls + arpeggio timing fixes
+
+### Goals
+- Provide direct control over generated chord playback style.
+- Keep arpeggios musically clear and grid-locked.
+
+### Implemented
+1. **Playback style selection in generate flow**
+   - Added style choice to "Generate Chords" prompt:
+     - `Block Chords`
+     - `Arpeggio`
+   - Style is passed through generation response handling into chord-track creation.
+
+2. **Arpeggio behavior iteration**
+   - Tested a custom motif variant and reverted based on listening feedback.
+   - Final behavior restored to original staggered arpeggios.
+
+3. **Grid-locked arpeggio starts**
+   - Arpeggio note starts now align strictly to beat grids:
+     - eighth-note (`0.5` beats) when space allows
+     - sixteenth-note (`0.25` beats) fallback for shorter chord windows
+   - Removed in-between fractional step offsets.
+
+### Files changed
+- `examples/Reason/ReasonMainComponent.h/.cpp`
+- `examples/Reason/SessionController.h/.cpp`
+
+### Validation
+- Build successful after playback-style + timing refinements.
+
+## 2026-02-10 03:05 - Sustain pedal shaping for generated chord tracks
+
+### Goal
+- Add repeatable bar-level sustain behavior to generated chord MIDI tracks.
+
+### Implemented
+- For each generated chord clip:
+  - Insert CC64 sustain ON at each bar start.
+  - Insert CC64 sustain OFF shortly before bar end (16th-note early).
+  - Repeat through full clip length for every generated option track.
+
+### Files changed
+- `examples/Reason/SessionController.cpp`
+
+### Validation
+- Build successful with sustain-automation generation enabled.

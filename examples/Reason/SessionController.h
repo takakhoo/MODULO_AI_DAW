@@ -103,6 +103,12 @@ public:
         juce::String symbol;
     };
 
+    enum class ChordPlaybackStyle
+    {
+        block,
+        arpeggio
+    };
+
     SessionController();
 
     te::Engine& getEngine() noexcept { return engine; }
@@ -190,7 +196,8 @@ public:
 
     bool buildRealchordsNoteEvents (uint64_t clipId, std::vector<RealchordsNoteEvent>& events,
                                     int& endFrame) const;
-    bool createChordOptionTracks (uint64_t sourceClipId, const std::vector<ChordOption>& options);
+    bool createChordOptionTracks (uint64_t sourceClipId, const std::vector<ChordOption>& options,
+                                  ChordPlaybackStyle playbackStyle = ChordPlaybackStyle::block);
     std::vector<ChordLabel> getChordLabelsForClip (uint64_t clipId) const;
     std::vector<ChordLabel> getChordLabelsForTrack (int trackIndex) const;
 

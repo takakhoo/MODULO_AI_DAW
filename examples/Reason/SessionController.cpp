@@ -71,6 +71,20 @@ juce::String bestLabelForDescription (const juce::PluginDescription& desc)
 
 juce::String boolToText (bool v) { return v ? "true" : "false"; }
 
+double getBeatsPerBarAtTime (te::Edit& edit, te::TimePosition time)
+{
+    const auto sigText = edit.tempoSequence.getTimeSigAt (time).getStringTimeSig();
+    auto parts = juce::StringArray::fromTokens (sigText, "/", "");
+    if (parts.size() >= 2)
+    {
+        const int numerator = juce::jmax (1, parts[0].getIntValue());
+        const int denominator = juce::jmax (1, parts[1].getIntValue());
+        return numerator * (4.0 / (double) denominator);
+    }
+
+    return 4.0;
+}
+
 te::SettingID getKnownPluginListSettingId()
 {
    #if JUCE_64BIT
@@ -1572,7 +1586,8 @@ bool SessionController::buildRealchordsNoteEvents (uint64_t clipId,
 }
 
 bool SessionController::createChordOptionTracks (uint64_t sourceClipId,
-                                                 const std::vector<ChordOption>& options)
+                                                 const std::vector<ChordOption>& options,
+                                                 ChordPlaybackStyle playbackStyle)
 {
     if (edit == nullptr || options.empty())
         return false;
@@ -1641,16 +1656,66 @@ bool SessionController::createChordOptionTracks (uint64_t sourceClipId,
 
             const double startBeats = (startFrame / framesPerBeat);
             const double lengthBeats = (endFrame - startFrame) / framesPerBeat;
-            const auto startBeat = te::BeatPosition::fromBeats (startBeats);
-            const auto durBeat = te::BeatDuration::fromBeats (juce::jmax (0.25, lengthBeats));
+            juce::Array<int> orderedPitches (onsets[i].pitches);
+            orderedPitches.sort();
 
-            for (auto pitch : onsets[i].pitches)
-                seq.addNote (pitch, startBeat, durBeat, 100, 0, &undo);
+            if (playbackStyle == ChordPlaybackStyle::arpeggio)
+            {
+                const int noteCount = orderedPitches.size();
+                const double eighthStep = 0.5;     // eighth-note grid
+                const double sixteenthStep = 0.25; // sixteenth-note grid
+                const double minTail = 0.125;
+                const double neededForEighth = (juce::jmax (0, noteCount - 1) * eighthStep) + minTail;
+                const double stepBeats = (lengthBeats >= neededForEighth) ? eighthStep : sixteenthStep;
+
+                for (int noteIndex = 0; noteIndex < orderedPitches.size(); ++noteIndex)
+                {
+                    const double noteStartBeats = startBeats + (stepBeats * noteIndex);
+
+                    // Keep arpeggio starts locked to 1/8 or 1/16 grid and avoid
+                    // placing notes after the chord window.
+                    const double elapsed = stepBeats * noteIndex;
+                    if (elapsed >= lengthBeats)
+                        break;
+
+                    const double remaining = lengthBeats - elapsed;
+                    const double noteLengthBeats = juce::jmax (minTail, juce::jmin (stepBeats * 0.95, remaining));
+                    seq.addNote (orderedPitches[noteIndex],
+                                 te::BeatPosition::fromBeats (noteStartBeats),
+                                 te::BeatDuration::fromBeats (noteLengthBeats),
+                                 100, 0, &undo);
+                }
+            }
+            else
+            {
+                const auto startBeat = te::BeatPosition::fromBeats (startBeats);
+                const auto durBeat = te::BeatDuration::fromBeats (juce::jmax (0.25, lengthBeats));
+                for (auto pitch : orderedPitches)
+                    seq.addNote (pitch, startBeat, durBeat, 100, 0, &undo);
+            }
 
             auto label = juce::ValueTree ("CHORD_LABEL");
             label.setProperty ("beat", startBeats, nullptr);
             label.setProperty ("symbol", onsets[i].symbol, nullptr);
             labelsState.addChild (label, -1, nullptr);
+        }
+
+        // Add sustain pedal every bar: down on bar start, up just before bar end.
+        const auto clipStartBeatAbs = te::toBeats (clipStart, edit->tempoSequence);
+        const auto clipEndBeatAbs = te::toBeats (clipStart + clipLengthSeconds, edit->tempoSequence);
+        const double clipLengthBeats = juce::jmax (0.0, (clipEndBeatAbs - clipStartBeatAbs).inBeats());
+        const double beatsPerBar = juce::jmax (1.0, getBeatsPerBarAtTime (*edit, clipStart));
+        const double liftBeforeBarEndBeats = 0.25; // 16th-note before bar end
+        const int sustainOn = 127 << 7;
+        const int sustainOff = 0;
+
+        for (double barStart = 0.0; barStart < clipLengthBeats; barStart += beatsPerBar)
+        {
+            const double barEnd = juce::jmin (clipLengthBeats, barStart + beatsPerBar);
+            const double offBeat = juce::jmax (barStart + 0.0625, barEnd - liftBeforeBarEndBeats);
+
+            seq.addControllerEvent (te::BeatPosition::fromBeats (barStart), 64, sustainOn, &undo);
+            seq.addControllerEvent (te::BeatPosition::fromBeats (offBeat), 64, sustainOff, &undo);
         }
 
         clip->setMidiChannel (te::MidiChannel (1));
