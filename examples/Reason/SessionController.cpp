@@ -418,6 +418,7 @@ bool SessionController::createNewEdit (const juce::File& editFile)
     newEdit->ensureNumberOfAudioTracks (3);
 
     edit = std::move (newEdit);
+    cachedKeySignature.clear();
     transport = &edit->getTransport();
     transport->stop (false, false);
     transport->setPosition (te::TimePosition());
@@ -449,6 +450,7 @@ bool SessionController::openEdit (const juce::File& editFile)
     newEdit->playInStopEnabled = true;
 
     edit = std::move (newEdit);
+    cachedKeySignature.clear();
     transport = &edit->getTransport();
     transport->stop (false, false);
     transport->setPosition (te::TimePosition());
@@ -923,10 +925,13 @@ bool SessionController::setTimeSignature (const juce::String& text)
 
 juce::String SessionController::getKeySignature() const
 {
+    if (! cachedKeySignature.isEmpty())
+        return cachedKeySignature;
+
     if (edit == nullptr)
         return "Cmaj";
 
-    auto& pitch = edit->pitchSequence.getPitchAt (te::TimePosition::fromSeconds (cursorTimeSeconds));
+    auto& pitch = edit->pitchSequence.getPitchAt (te::TimePosition::fromSeconds (0.0));
     const int root = pitch.getPitch();
     const auto scale = pitch.getScale();
     auto& mutableEngine = const_cast<te::Engine&> (engine);
@@ -958,7 +963,33 @@ bool SessionController::setKeySignature (const juce::String& text)
     auto& pitchSetting = edit->pitchSequence.getPitchAt (te::TimePosition::fromSeconds (0.0));
     pitchSetting.setPitch (pitchValue);
     pitchSetting.setScaleID (scaleType);
+    cachedKeySignature = trimmed;
     return true;
+}
+
+static bool keySignatureUsesFlats (const juce::String& keySig)
+{
+    const juce::String k = keySig.trim().toLowerCase();
+    if (k.startsWith ("f#") || k.startsWith ("c#"))
+        return false;
+    if (k.startsWith ("f"))
+        return true;
+    if (k.startsWith ("bb") || k.startsWith ("eb") || k.startsWith ("ab")
+        || k.startsWith ("db") || k.startsWith ("gb") || k.startsWith ("cb"))
+        return true;
+    return false;
+}
+
+juce::String SessionController::getNoteNameForPitch (int midiPitch) const
+{
+    const auto keySig = getKeySignature();
+    const bool useSharp = ! keySignatureUsesFlats (keySig);
+    static const char* sharpNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    static const char* flatNames[]  = { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+    const int p = juce::jlimit (0, 127, midiPitch);
+    const int octave = p / 12 - 1;
+    const char* name = useSharp ? sharpNames[p % 12] : flatNames[p % 12];
+    return juce::String (name) + juce::String (octave);
 }
 
 bool SessionController::isMetronomeEnabled() const
@@ -1400,6 +1431,28 @@ bool SessionController::resizeClipRange (uint64_t clipId, double newStartSeconds
     // Preserve sync so resizing behaves like trimming without shifting notes.
     clip->setStart (te::TimePosition::fromSeconds (safeStart), true, false);
     clip->setEnd (te::TimePosition::fromSeconds (safeEnd), true);
+
+    // For MIDI clips, remove notes that fall outside the new clip range (trimmed notes disappear).
+    if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+    {
+        auto& seq = midiClip->getSequence();
+        const auto clipRange = midiClip->getEditTimeRange();
+        const double clipStartSec = clipRange.getStart().inSeconds();
+        const double clipEndSec = clipRange.getEnd().inSeconds();
+        std::vector<te::MidiNote*> toRemove;
+        for (auto* note : seq.getNotes())
+        {
+            if (note == nullptr)
+                continue;
+            const auto noteRange = note->getEditTimeRange (*midiClip);
+            const double noteStart = noteRange.getStart().inSeconds();
+            const double noteEnd = noteRange.getEnd().inSeconds();
+            if (noteEnd <= clipStartSec || noteStart >= clipEndSec)
+                toRemove.push_back (note);
+        }
+        for (auto* note : toRemove)
+            seq.removeNote (*note, &undoManager);
+    }
     return true;
 }
 
@@ -1722,6 +1775,26 @@ bool SessionController::updateMidiNote (uint64_t clipId, const juce::ValueTree& 
     undo.beginNewTransaction ("Edit MIDI Note");
     note->setStartAndLength (startBeat, lengthBeats, &undo);
     note->setNoteNumber (noteNumber, &undo);
+    return true;
+}
+
+bool SessionController::setMidiNoteVelocity (uint64_t clipId, const juce::ValueTree& noteState, int velocity)
+{
+    if (edit == nullptr)
+        return false;
+
+    auto* midiClip = findMidiClipById (clipId);
+    if (midiClip == nullptr)
+        return false;
+
+    auto* note = findMidiNote (*midiClip, noteState);
+    if (note == nullptr)
+        return false;
+
+    velocity = juce::jlimit (1, 127, velocity);
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Change Note Velocity");
+    note->setVelocity (velocity, &undo);
     return true;
 }
 
@@ -2171,7 +2244,7 @@ std::vector<SessionController::ChordPreviewNote> SessionController::getChordCell
         {
             const double localStart = juce::jmax (0.0, nStart - startBeat);
             const double localEnd = juce::jmin (endBeat - startBeat, nEnd - startBeat);
-            result.push_back ({ note->getNoteNumber(), localStart, juce::jmax (0.0625, localEnd - localStart) });
+            result.push_back ({ note->getNoteNumber(), localStart, juce::jmax (0.0625, localEnd - localStart), note->getVelocity() });
         }
     }
 
@@ -2651,6 +2724,661 @@ bool SessionController::setChordAtCell (int trackIndex, int measure, int beat, c
     }
 
     enforceChordSustainEveryBar (*edit, *chordClip, undo);
+    return true;
+}
+
+void SessionController::playPreviewNote (int trackIndex, int noteNumber, int velocity)
+{
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return;
+    const int vel = juce::jlimit (1, 127, velocity);
+    track->injectLiveMidiMessage (juce::MidiMessage::noteOn (1, noteNumber, (juce::uint8) vel), {});
+    juce::Timer::callAfterDelay (420, [track, noteNumber]
+    {
+        track->injectLiveMidiMessage (juce::MidiMessage::noteOff (1, noteNumber), {});
+    });
+}
+
+bool SessionController::updateChordCellNotePitch (int trackIndex, int measure, int beat, int noteIndexInCell, int newPitch)
+{
+    if (edit == nullptr || measure < 1 || beat < 1 || noteIndexInCell < 0)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return false;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    double targetStartBeat = -1.0;
+    for (double beatOffset = 0.0; beatOffset <= clipLengthBeats + 0.0001; beatOffset += 1.0)
+    {
+        const auto absBeat = clipStartBeat + te::BeatDuration::fromBeats (beatOffset);
+        const auto timeSeconds = edit->tempoSequence.toTime (absBeat).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetStartBeat = beatOffset;
+            break;
+        }
+    }
+    if (targetStartBeat < 0.0)
+        return false;
+
+    double nextLabelBeat = clipLengthBeats;
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        const double b = (double) labelsState.getChild (i).getProperty ("beat");
+        if (b > targetStartBeat + 0.0001)
+            nextLabelBeat = juce::jmin (nextLabelBeat, b);
+    }
+    const double targetEndBeat = juce::jmin (clipLengthBeats, nextLabelBeat);
+    newPitch = juce::jlimit (0, 127, newPitch);
+
+    auto& seq = chordClip->getSequence();
+    std::vector<te::MidiNote*> notesInCell;
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+        const double nStart = note->getStartBeat().inBeats();
+        const double nEnd = nStart + note->getLengthBeats().inBeats();
+        if (nStart < targetEndBeat && nEnd > targetStartBeat)
+            notesInCell.push_back (note);
+    }
+    std::sort (notesInCell.begin(), notesInCell.end(), [targetStartBeat] (te::MidiNote* a, te::MidiNote* b)
+    {
+        const double localA = a->getStartBeat().inBeats() - targetStartBeat;
+        const double localB = b->getStartBeat().inBeats() - targetStartBeat;
+        if (localA < localB)
+            return true;
+        if (localA > localB)
+            return false;
+        return a->getNoteNumber() < b->getNoteNumber();
+    });
+    if (! juce::isPositiveAndBelow (noteIndexInCell, (int) notesInCell.size()))
+        return false;
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Change Chord Note Pitch");
+    notesInCell[(size_t) noteIndexInCell]->setNoteNumber (newPitch, &undo);
+    return true;
+}
+
+bool SessionController::addChordCellNote (int trackIndex, int measure, int beat, int pitch, double startBeats, double lengthBeats, int velocity)
+{
+    if (edit == nullptr || measure < 1 || beat < 1)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return false;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    double targetStartBeat = -1.0;
+    for (double beatOffset = 0.0; beatOffset <= clipLengthBeats + 0.0001; beatOffset += 1.0)
+    {
+        const auto absBeat = clipStartBeat + te::BeatDuration::fromBeats (beatOffset);
+        const auto timeSeconds = edit->tempoSequence.toTime (absBeat).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetStartBeat = beatOffset;
+            break;
+        }
+    }
+    if (targetStartBeat < 0.0)
+        return false;
+
+    double nextLabelBeat = clipLengthBeats;
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        const double b = (double) labelsState.getChild (i).getProperty ("beat");
+        if (b > targetStartBeat + 0.0001)
+            nextLabelBeat = juce::jmin (nextLabelBeat, b);
+    }
+    const double targetEndBeat = juce::jmin (clipLengthBeats, nextLabelBeat);
+    if (targetEndBeat <= targetStartBeat + 0.001)
+        return false;
+
+    pitch = juce::jlimit (0, 127, pitch);
+    velocity = juce::jlimit (1, 127, velocity);
+    startBeats = juce::jmax (0.0, juce::jmin (targetEndBeat - targetStartBeat - 0.001, startBeats));
+    lengthBeats = juce::jmax (0.0625, juce::jmin (targetEndBeat - targetStartBeat - startBeats, lengthBeats));
+
+    auto& seq = chordClip->getSequence();
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Add Chord Note");
+    seq.addNote (pitch,
+                 te::BeatPosition::fromBeats (targetStartBeat + startBeats),
+                 te::BeatDuration::fromBeats (lengthBeats),
+                 velocity, 0, &undo);
+    return true;
+}
+
+bool SessionController::updateChordCellNoteVelocity (int trackIndex, int measure, int beat, int noteIndexInCell, int newVelocity)
+{
+    if (edit == nullptr || measure < 1 || beat < 1 || noteIndexInCell < 0)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return false;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    double targetStartBeat = -1.0;
+    for (double beatOffset = 0.0; beatOffset <= clipLengthBeats + 0.0001; beatOffset += 1.0)
+    {
+        const auto absBeat = clipStartBeat + te::BeatDuration::fromBeats (beatOffset);
+        const auto timeSeconds = edit->tempoSequence.toTime (absBeat).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetStartBeat = beatOffset;
+            break;
+        }
+    }
+    if (targetStartBeat < 0.0)
+        return false;
+
+    double nextLabelBeat = clipLengthBeats;
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        const double b = (double) labelsState.getChild (i).getProperty ("beat");
+        if (b > targetStartBeat + 0.0001)
+            nextLabelBeat = juce::jmin (nextLabelBeat, b);
+    }
+    const double targetEndBeat = juce::jmin (clipLengthBeats, nextLabelBeat);
+    newVelocity = juce::jlimit (1, 127, newVelocity);
+
+    auto& seq = chordClip->getSequence();
+    std::vector<te::MidiNote*> notesInCell;
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+        const double nStart = note->getStartBeat().inBeats();
+        const double nEnd = nStart + note->getLengthBeats().inBeats();
+        if (nStart < targetEndBeat && nEnd > targetStartBeat)
+            notesInCell.push_back (note);
+    }
+    std::sort (notesInCell.begin(), notesInCell.end(), [targetStartBeat] (te::MidiNote* a, te::MidiNote* b)
+    {
+        const double localA = a->getStartBeat().inBeats() - targetStartBeat;
+        const double localB = b->getStartBeat().inBeats() - targetStartBeat;
+        if (localA < localB)
+            return true;
+        if (localA > localB)
+            return false;
+        return a->getNoteNumber() < b->getNoteNumber();
+    });
+    if (! juce::isPositiveAndBelow (noteIndexInCell, (int) notesInCell.size()))
+        return false;
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Change Chord Note Velocity");
+    notesInCell[(size_t) noteIndexInCell]->setVelocity (newVelocity, &undo);
+    return true;
+}
+
+bool SessionController::deleteChordCellNote (int trackIndex, int measure, int beat, int noteIndexInCell)
+{
+    if (edit == nullptr || measure < 1 || beat < 1 || noteIndexInCell < 0)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return false;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    double targetStartBeat = -1.0;
+    for (double beatOffset = 0.0; beatOffset <= clipLengthBeats + 0.0001; beatOffset += 1.0)
+    {
+        const auto absBeat = clipStartBeat + te::BeatDuration::fromBeats (beatOffset);
+        const auto timeSeconds = edit->tempoSequence.toTime (absBeat).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetStartBeat = beatOffset;
+            break;
+        }
+    }
+    if (targetStartBeat < 0.0)
+        return false;
+
+    double nextLabelBeat = clipLengthBeats;
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        const double b = (double) labelsState.getChild (i).getProperty ("beat");
+        if (b > targetStartBeat + 0.0001)
+            nextLabelBeat = juce::jmin (nextLabelBeat, b);
+    }
+    const double targetEndBeat = juce::jmin (clipLengthBeats, nextLabelBeat);
+
+    auto& seq = chordClip->getSequence();
+    std::vector<te::MidiNote*> notesInCell;
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+        const double nStart = note->getStartBeat().inBeats();
+        const double nEnd = nStart + note->getLengthBeats().inBeats();
+        if (nStart < targetEndBeat && nEnd > targetStartBeat)
+            notesInCell.push_back (note);
+    }
+    std::sort (notesInCell.begin(), notesInCell.end(), [targetStartBeat] (te::MidiNote* a, te::MidiNote* b)
+    {
+        const double localA = a->getStartBeat().inBeats() - targetStartBeat;
+        const double localB = b->getStartBeat().inBeats() - targetStartBeat;
+        if (localA < localB)
+            return true;
+        if (localA > localB)
+            return false;
+        return a->getNoteNumber() < b->getNoteNumber();
+    });
+    if (! juce::isPositiveAndBelow (noteIndexInCell, (int) notesInCell.size()))
+        return false;
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Delete Chord Note");
+    seq.removeNote (*notesInCell[(size_t) noteIndexInCell], &undo);
+    return true;
+}
+
+bool SessionController::resizeChordCellNote (int trackIndex, int measure, int beat, int noteIndexInCell, double newLengthBeats)
+{
+    if (edit == nullptr || measure < 1 || beat < 1 || noteIndexInCell < 0)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return false;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    double targetStartBeat = -1.0;
+    for (double beatOffset = 0.0; beatOffset <= clipLengthBeats + 0.0001; beatOffset += 1.0)
+    {
+        const auto absBeat = clipStartBeat + te::BeatDuration::fromBeats (beatOffset);
+        const auto timeSeconds = edit->tempoSequence.toTime (absBeat).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetStartBeat = beatOffset;
+            break;
+        }
+    }
+    if (targetStartBeat < 0.0)
+        return false;
+
+    double nextLabelBeat = clipLengthBeats;
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        const double b = (double) labelsState.getChild (i).getProperty ("beat");
+        if (b > targetStartBeat + 0.0001)
+            nextLabelBeat = juce::jmin (nextLabelBeat, b);
+    }
+    const double targetEndBeat = juce::jmin (clipLengthBeats, nextLabelBeat);
+
+    auto& seq = chordClip->getSequence();
+    std::vector<te::MidiNote*> notesInCell;
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+        const double nStart = note->getStartBeat().inBeats();
+        const double nEnd = nStart + note->getLengthBeats().inBeats();
+        if (nStart < targetEndBeat && nEnd > targetStartBeat)
+            notesInCell.push_back (note);
+    }
+    std::sort (notesInCell.begin(), notesInCell.end(), [targetStartBeat] (te::MidiNote* a, te::MidiNote* b)
+    {
+        const double localA = a->getStartBeat().inBeats() - targetStartBeat;
+        const double localB = b->getStartBeat().inBeats() - targetStartBeat;
+        if (localA < localB)
+            return true;
+        if (localA > localB)
+            return false;
+        return a->getNoteNumber() < b->getNoteNumber();
+    });
+    if (! juce::isPositiveAndBelow (noteIndexInCell, (int) notesInCell.size()))
+        return false;
+
+    const double noteStart = notesInCell[(size_t) noteIndexInCell]->getStartBeat().inBeats();
+    const double maxLength = targetEndBeat - noteStart;
+    newLengthBeats = juce::jmax (0.0625, juce::jmin (maxLength, newLengthBeats));
+
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Resize Chord Note");
+    notesInCell[(size_t) noteIndexInCell]->setStartAndLength (te::BeatPosition::fromBeats (noteStart),
+                                                              te::BeatDuration::fromBeats (newLengthBeats),
+                                                              &undo);
+    return true;
+}
+
+bool SessionController::updateChordCellNoteStart (int trackIndex, int measure, int beat, int noteIndexInCell, double newStartBeats)
+{
+    if (edit == nullptr || measure < 1 || beat < 1 || noteIndexInCell < 0)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return false;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    double targetStartBeat = -1.0;
+    for (double beatOffset = 0.0; beatOffset <= clipLengthBeats + 0.0001; beatOffset += 1.0)
+    {
+        const auto absBeat = clipStartBeat + te::BeatDuration::fromBeats (beatOffset);
+        const auto timeSeconds = edit->tempoSequence.toTime (absBeat).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetStartBeat = beatOffset;
+            break;
+        }
+    }
+    if (targetStartBeat < 0.0)
+        return false;
+
+    double nextLabelBeat = clipLengthBeats;
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        const double b = (double) labelsState.getChild (i).getProperty ("beat");
+        if (b > targetStartBeat + 0.0001)
+            nextLabelBeat = juce::jmin (nextLabelBeat, b);
+    }
+    const double targetEndBeat = juce::jmin (clipLengthBeats, nextLabelBeat);
+
+    auto& seq = chordClip->getSequence();
+    std::vector<te::MidiNote*> notesInCell;
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+        const double nStart = note->getStartBeat().inBeats();
+        const double nEnd = nStart + note->getLengthBeats().inBeats();
+        if (nStart < targetEndBeat && nEnd > targetStartBeat)
+            notesInCell.push_back (note);
+    }
+    std::sort (notesInCell.begin(), notesInCell.end(), [targetStartBeat] (te::MidiNote* a, te::MidiNote* b)
+    {
+        const double localA = a->getStartBeat().inBeats() - targetStartBeat;
+        const double localB = b->getStartBeat().inBeats() - targetStartBeat;
+        if (localA < localB)
+            return true;
+        if (localA > localB)
+            return false;
+        return a->getNoteNumber() < b->getNoteNumber();
+    });
+    if (! juce::isPositiveAndBelow (noteIndexInCell, (int) notesInCell.size()))
+        return false;
+
+    te::MidiNote* note = notesInCell[(size_t) noteIndexInCell];
+    const double currentStart = note->getStartBeat().inBeats();
+    const double currentLength = note->getLengthBeats().inBeats();
+    const double noteEnd = currentStart + currentLength;
+
+    newStartBeats = juce::jmax (0.0, juce::jmin (noteEnd - targetStartBeat - 0.0625, newStartBeats));
+    const double newStart = targetStartBeat + newStartBeats;
+    const double newLength = noteEnd - newStart;
+
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Move Chord Note Start");
+    note->setStartAndLength (te::BeatPosition::fromBeats (newStart),
+                             te::BeatDuration::fromBeats (newLength),
+                             &undo);
+    return true;
+}
+
+bool SessionController::quantizeChordCellNotes (int trackIndex, int measure, int beat, double gridBeats)
+{
+    if (edit == nullptr || measure < 1 || beat < 1 || gridBeats <= 0.0)
+        return false;
+
+    auto* track = getAudioTrack (trackIndex);
+    if (track == nullptr)
+        return false;
+
+    te::MidiClip* chordClip = nullptr;
+    for (auto* clip : track->getClips())
+    {
+        if (auto* midiClip = dynamic_cast<te::MidiClip*> (clip))
+        {
+            auto labelsState = midiClip->state.getChildWithName ("CHORD_LABELS");
+            if (labelsState.isValid() && labelsState.getNumChildren() > 0)
+            {
+                chordClip = midiClip;
+                break;
+            }
+        }
+    }
+    if (chordClip == nullptr)
+        return false;
+
+    auto labelsState = chordClip->state.getChildWithName ("CHORD_LABELS");
+    if (! labelsState.isValid())
+        return false;
+
+    const auto clipStart = chordClip->getPosition().getStart();
+    const auto clipStartBeat = te::toBeats (clipStart, edit->tempoSequence);
+    const auto clipRange = chordClip->getEditTimeRange();
+    const auto clipEndBeat = te::toBeats (clipRange.getEnd(), edit->tempoSequence);
+    const double clipLengthBeats = juce::jmax (0.0, (clipEndBeat - clipStartBeat).inBeats());
+
+    double targetStartBeat = -1.0;
+    for (double beatOffset = 0.0; beatOffset <= clipLengthBeats + 0.0001; beatOffset += 1.0)
+    {
+        const auto absBeat = clipStartBeat + te::BeatDuration::fromBeats (beatOffset);
+        const auto timeSeconds = edit->tempoSequence.toTime (absBeat).inSeconds();
+        int bar = 0, barBeat = 0;
+        if (! parseBarBeatText (getBarsAndBeatsText (timeSeconds), bar, barBeat))
+            continue;
+        if (bar == measure && barBeat == beat)
+        {
+            targetStartBeat = beatOffset;
+            break;
+        }
+    }
+    if (targetStartBeat < 0.0)
+        return false;
+
+    double nextLabelBeat = clipLengthBeats;
+    for (int i = 0; i < labelsState.getNumChildren(); ++i)
+    {
+        const double b = (double) labelsState.getChild (i).getProperty ("beat");
+        if (b > targetStartBeat + 0.0001)
+            nextLabelBeat = juce::jmin (nextLabelBeat, b);
+    }
+    const double targetEndBeat = juce::jmin (clipLengthBeats, nextLabelBeat);
+
+    auto& seq = chordClip->getSequence();
+    std::vector<te::MidiNote*> notesInCell;
+    for (auto* note : seq.getNotes())
+    {
+        if (note == nullptr)
+            continue;
+        const double nStart = note->getStartBeat().inBeats();
+        const double nEnd = nStart + note->getLengthBeats().inBeats();
+        if (nStart < targetEndBeat && nEnd > targetStartBeat)
+            notesInCell.push_back (note);
+    }
+    if (notesInCell.empty())
+        return false;
+
+    auto& undo = edit->getUndoManager();
+    undo.beginNewTransaction ("Quantize Chord Notes");
+    for (auto* note : notesInCell)
+    {
+        if (note == nullptr)
+            continue;
+        const double nStart = note->getStartBeat().inBeats();
+        const double localStart = nStart - targetStartBeat;
+        const double quantizedLocalStart = std::round (localStart / gridBeats) * gridBeats;
+        const double newStart = juce::jmax (targetStartBeat, juce::jmin (targetEndBeat - 0.0625, targetStartBeat + quantizedLocalStart));
+        const double currentLength = note->getLengthBeats().inBeats();
+        note->setStartAndLength (te::BeatPosition::fromBeats (newStart),
+                                 te::BeatDuration::fromBeats (currentLength),
+                                 &undo);
+    }
     return true;
 }
 

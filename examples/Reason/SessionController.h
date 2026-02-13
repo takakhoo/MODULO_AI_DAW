@@ -108,6 +108,7 @@ public:
         int pitch = 60;
         double startBeats = 0.0;
         double lengthBeats = 0.25;
+        int velocity = 100;
     };
 
     enum class ChordPlaybackStyle
@@ -183,6 +184,7 @@ public:
     bool setTimeSignature (const juce::String& text);
     juce::String getKeySignature() const;
     bool setKeySignature (const juce::String& text);
+    juce::String getNoteNameForPitch (int midiPitch) const;
     juce::String getBarsAndBeatsText (double seconds) const;
     bool isMetronomeEnabled() const;
     void setMetronomeEnabled (bool enabled);
@@ -217,6 +219,7 @@ public:
     bool addMidiNote (uint64_t clipId, int noteNumber, double startSeconds, double lengthSeconds);
     bool updateMidiNote (uint64_t clipId, const juce::ValueTree& noteState,
                          double startSeconds, double lengthSeconds, int noteNumber);
+    bool setMidiNoteVelocity (uint64_t clipId, const juce::ValueTree& noteState, int velocity);
     bool resizeMidiNote (uint64_t clipId, const juce::ValueTree& noteState, double lengthSeconds);
     bool deleteMidiNote (uint64_t clipId, const juce::ValueTree& noteState);
     bool quantizeMidiNotes (uint64_t clipId, const juce::Array<juce::ValueTree>& noteStates, double gridSeconds);
@@ -230,6 +233,14 @@ public:
     std::vector<ChordPreviewNote> getChordCellPreviewNotesForTrack (int trackIndex, int measure, int beat) const;
     bool applyChordEditAction (int trackIndex, int measure, int beat, ChordEditAction action);
     bool setChordAtCell (int trackIndex, int measure, int beat, const juce::String& chordSymbol);
+    bool updateChordCellNotePitch (int trackIndex, int measure, int beat, int noteIndexInCell, int newPitch);
+    bool updateChordCellNoteVelocity (int trackIndex, int measure, int beat, int noteIndexInCell, int newVelocity);
+    bool addChordCellNote (int trackIndex, int measure, int beat, int pitch, double startBeats, double lengthBeats, int velocity = 100);
+    bool deleteChordCellNote (int trackIndex, int measure, int beat, int noteIndexInCell);
+    bool resizeChordCellNote (int trackIndex, int measure, int beat, int noteIndexInCell, double newLengthBeats);
+    bool updateChordCellNoteStart (int trackIndex, int measure, int beat, int noteIndexInCell, double newStartBeats);
+    bool quantizeChordCellNotes (int trackIndex, int measure, int beat, double gridBeats);
+    void playPreviewNote (int trackIndex, int noteNumber, int velocity = 65);
 
     std::vector<PluginChoice> getInstrumentChoices() const;
     std::vector<PluginChoice> getEffectChoices() const;
@@ -282,6 +293,7 @@ private:
     double cursorTimeSeconds = 0.0;
     double lastRecordStartSeconds = 0.0;
     juce::String selectedMidiDeviceId;
+    juce::String cachedKeySignature;
     std::vector<bool> trackArmed;
     mutable std::unordered_map<uint64_t, RecordingPreviewState> recordingPreview;
 };

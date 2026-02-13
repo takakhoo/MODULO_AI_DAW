@@ -1,4 +1,5 @@
 #include "PianoRollComponent.h"
+#include "ResizeCursors.h"
 
 #include <cmath>
 #include <limits>
@@ -8,6 +9,14 @@ PianoRollComponent::PianoRollComponent()
     setOpaque (true);
     setWantsKeyboardFocus (true);
     startTimerHz (30);
+
+    velocitySlider.setSliderStyle (juce::Slider::LinearVertical);
+    velocitySlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    velocitySlider.setRange (1.0, 127.0, 1.0);
+    velocitySlider.setValue (64.0);
+    velocitySlider.setVisible (false);
+    velocitySlider.onValueChange = [this] { applyVelocitySliderChange(); };
+    addAndMakeVisible (velocitySlider);
 }
 
 void PianoRollComponent::setSession (SessionController* newSession)
@@ -25,6 +34,7 @@ void PianoRollComponent::setClipId (uint64_t newClipId)
     dragAllNotes = false;
     isLassoSelecting = false;
     lassoSelection = {};
+    updateVelocitySliderFromSelection();
     repaint();
 }
 
@@ -41,6 +51,8 @@ void PianoRollComponent::paint (juce::Graphics& g)
 
     auto area = getLocalBounds();
     auto keyboardArea = area.removeFromLeft (keyboardWidth);
+    if (velocitySlider.isVisible())
+        area.removeFromLeft (velocityStripWidth);
     auto rulerArea = showRuler ? area.removeFromTop (rulerHeight) : juce::Rectangle<int>();
     auto sustainArea = area.removeFromBottom (sustainLaneHeight);
     auto noteArea = area;
@@ -73,14 +85,81 @@ void PianoRollComponent::paint (juce::Graphics& g)
     if (session != nullptr)
     {
         const double playheadSeconds = session->getCurrentTimeSeconds();
-        const int x = (int) ((playheadSeconds - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
+        const int x = (int) ((playheadSeconds - viewStartSeconds) * pixelsPerSecond) + getNoteGridLeft();
         g.setColour (juce::Colour (0xFFEA5656));
         g.drawLine ((float) x, (float) noteArea.getY(), (float) x, (float) sustainArea.getBottom(), 1.2f);
     }
 }
 
+int PianoRollComponent::getNoteGridLeft() const
+{
+    return keyboardWidth + (velocitySlider.isVisible() ? velocityStripWidth : 0);
+}
+
 void PianoRollComponent::resized()
 {
+    if (velocitySlider.isVisible())
+        velocitySlider.setBounds (keyboardWidth, 0, velocityStripWidth, getHeight());
+}
+
+void PianoRollComponent::updateVelocitySliderFromSelection()
+{
+    if (session == nullptr || clipId == 0)
+    {
+        velocitySlider.setVisible (false);
+        return;
+    }
+    juce::Array<juce::ValueTree> toUse;
+    if (! selectedNotes.isEmpty())
+        toUse = selectedNotes;
+    else if (selectedNoteState.isValid())
+        toUse.add (selectedNoteState);
+    if (toUse.isEmpty())
+    {
+        velocitySlider.setVisible (false);
+        return;
+    }
+    const auto notes = session->getMidiNotesForClip (clipId);
+    int sum = 0;
+    int count = 0;
+    for (const auto& info : notes)
+    {
+        for (const auto& vt : toUse)
+            if (vt == info.state) { sum += info.velocity; ++count; break; }
+    }
+    const int avg = (count > 0) ? (sum / count) : 64;
+    velocitySliderLastValue = (double) juce::jlimit (1, 127, avg);
+    velocitySlider.setValue (velocitySliderLastValue, juce::dontSendNotification);
+    velocitySlider.setVisible (true);
+}
+
+void PianoRollComponent::applyVelocitySliderChange()
+{
+    if (session == nullptr || clipId == 0)
+        return;
+    juce::Array<juce::ValueTree> toUse;
+    if (! selectedNotes.isEmpty())
+        toUse = selectedNotes;
+    else if (selectedNoteState.isValid())
+        toUse.add (selectedNoteState);
+    if (toUse.isEmpty())
+        return;
+    const double newVal = velocitySlider.getValue();
+    const int delta = (int) std::round (newVal - velocitySliderLastValue);
+    velocitySliderLastValue = newVal;
+    const auto notes = session->getMidiNotesForClip (clipId);
+    for (const auto& info : notes)
+    {
+        for (const auto& vt : toUse)
+        {
+            if (vt != info.state)
+                continue;
+            const int newVel = juce::jlimit (1, 127, info.velocity + delta);
+            session->setMidiNoteVelocity (clipId, info.state, newVel);
+            break;
+        }
+    }
+    repaint();
 }
 
 void PianoRollComponent::timerCallback()
@@ -97,16 +176,16 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& event)
     grabKeyboardFocus();
 
     auto local = getLocalBounds();
-    local.removeFromLeft (keyboardWidth);
+    local.removeFromLeft (getNoteGridLeft());
     const bool inRuler = showRuler && event.y < rulerHeight;
     if (showRuler)
         local.removeFromTop (rulerHeight);
     auto sustainArea = local.removeFromBottom (sustainLaneHeight);
     auto noteArea = local;
 
-    if (event.x >= keyboardWidth)
+    if (event.x >= getNoteGridLeft())
     {
-        const double clickTime = viewStartSeconds + (event.position.x - keyboardWidth) / pixelsPerSecond;
+        const double clickTime = viewStartSeconds + (event.position.x - getNoteGridLeft()) / pixelsPerSecond;
         session->setCursorTimeSeconds (juce::jmax (0.0, clickTime));
         if (inRuler)
         {
@@ -124,7 +203,9 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& event)
     dragMode = DragMode::none;
     dragAllNotes = false;
     dragAllResizing = false;
+    dragAllResizeLeft = false;
     dragAllResizeDelta = 0.0;
+    dragAllResizeLeftDeltaStart = 0.0;
     dragAllDeltaSeconds = 0.0;
     dragAllDeltaSemitones = 0;
     dragAllBaseNotes.clear();
@@ -163,15 +244,25 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& event)
         dragPreviewLength = dragStartLength;
         dragPreviewNote = dragStartNote;
 
+        if (auto clipInfo = session->getClipInfo (clipId))
+            session->playPreviewNote (clipInfo->trackIndex, note.info.noteNumber, 65);
+
         const int resizeHandle = 6;
-        if (event.x > note.bounds.getRight() - resizeHandle)
+        const bool onLeftEdge  = (event.x >= note.bounds.getX() && event.x < note.bounds.getX() + resizeHandle);
+        const bool onRightEdge = (event.x > note.bounds.getRight() - resizeHandle && event.x <= note.bounds.getRight());
+
+        if (onRightEdge)
         {
             dragMode = DragMode::resize;
+        }
+        else if (onLeftEdge)
+        {
+            dragMode = DragMode::resizeLeft;
         }
         else
         {
             dragMode = DragMode::move;
-            const double clickTime = viewStartSeconds + (event.position.x - keyboardWidth) / pixelsPerSecond;
+            const double clickTime = viewStartSeconds + (event.position.x - getNoteGridLeft()) / pixelsPerSecond;
             dragOffsetSeconds = clickTime - dragStartSeconds;
         }
 
@@ -185,12 +276,18 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& event)
             dragAllResizing = true;
             dragAllBaseNotes = session->getMidiNotesForClip (clipId);
         }
+        else if (dragMode == DragMode::resizeLeft && selectedNotes.size() > 1)
+        {
+            dragAllResizeLeft = true;
+            dragAllBaseNotes = session->getMidiNotesForClip (clipId);
+        }
 
+        updateVelocitySliderFromSelection();
         repaint();
         return;
     }
 
-    if (event.x < keyboardWidth)
+    if (event.x < getNoteGridLeft())
         return;
 
     if (! event.mods.isCtrlDown() && ! event.mods.isCommandDown())
@@ -202,11 +299,12 @@ void PianoRollComponent::mouseDown (const juce::MouseEvent& event)
         if (! lassoAdditive)
             selectedNotes.clear();
         selectedNoteState = {};
+        updateVelocitySliderFromSelection();
         repaint();
         return;
     }
 
-    const double clickTime = viewStartSeconds + (event.position.x - keyboardWidth) / pixelsPerSecond;
+    const double clickTime = viewStartSeconds + (event.position.x - getNoteGridLeft()) / pixelsPerSecond;
     const double startTime = quantizeSeconds (juce::jmax (0.0, clickTime));
     const double length = getGridSeconds();
 
@@ -233,7 +331,7 @@ void PianoRollComponent::mouseDrag (const juce::MouseEvent& event)
         return;
 
     auto local = getLocalBounds();
-    local.removeFromLeft (keyboardWidth);
+    local.removeFromLeft (getNoteGridLeft());
     if (showRuler)
         local.removeFromTop (rulerHeight);
     local.removeFromBottom (sustainLaneHeight);
@@ -241,13 +339,20 @@ void PianoRollComponent::mouseDrag (const juce::MouseEvent& event)
 
     if (dragMode == DragMode::move)
     {
-        const double dragTime = viewStartSeconds + (event.position.x - keyboardWidth) / pixelsPerSecond;
+        const double dragTime = viewStartSeconds + (event.position.x - getNoteGridLeft()) / pixelsPerSecond;
         const double startTime = juce::jmax (0.0, dragTime - dragOffsetSeconds);
         const int noteNumber = getNoteFromY (event.y, noteArea);
 
         dragPreviewStart = startTime;
         dragPreviewNote = noteNumber;
         dragPreviewLength = dragStartLength;
+
+        if (noteNumber != lastPlayedPitchDuringDrag)
+        {
+            lastPlayedPitchDuringDrag = noteNumber;
+            if (auto clipInfo = session->getClipInfo (clipId))
+                session->playPreviewNote (clipInfo->trackIndex, noteNumber, 65);
+        }
 
         if (dragAllNotes)
         {
@@ -257,7 +362,7 @@ void PianoRollComponent::mouseDrag (const juce::MouseEvent& event)
     }
     else if (dragMode == DragMode::resize)
     {
-        const double dragTime = viewStartSeconds + (event.position.x - keyboardWidth) / pixelsPerSecond;
+        const double dragTime = viewStartSeconds + (event.position.x - getNoteGridLeft()) / pixelsPerSecond;
         const double newLength = dragTime - dragStartSeconds;
         dragPreviewLength = juce::jmax (0.01, newLength);
         dragPreviewStart = dragStartSeconds;
@@ -266,8 +371,66 @@ void PianoRollComponent::mouseDrag (const juce::MouseEvent& event)
         if (dragAllResizing)
             dragAllResizeDelta = dragPreviewLength - dragStartLength;
     }
+    else if (dragMode == DragMode::resizeLeft)
+    {
+        const double dragTime = viewStartSeconds + (event.position.x - getNoteGridLeft()) / pixelsPerSecond;
+        const double noteEnd = dragStartSeconds + dragStartLength;
+        const double newStart = juce::jmax (0.0, juce::jmin (noteEnd - 0.01, dragTime));
+        dragPreviewStart = newStart;
+        dragPreviewLength = noteEnd - newStart;
+        dragPreviewNote = dragStartNote;
+
+        if (dragAllResizeLeft)
+            dragAllResizeLeftDeltaStart = dragPreviewStart - dragStartSeconds;
+    }
 
     repaint();
+}
+
+void PianoRollComponent::mouseMove (const juce::MouseEvent& event)
+{
+    if (session == nullptr || clipId == 0)
+    {
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    auto noteArea = getNoteGridArea();
+    if (event.x < noteArea.getX() || event.y < noteArea.getY()
+        || event.x >= noteArea.getRight() || event.y >= noteArea.getBottom())
+    {
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    const int resizeHandleWidth = 6;
+    const auto noteRects = buildNoteRects();
+
+    for (const auto& note : noteRects)
+    {
+        if (! note.bounds.contains (event.getPosition()))
+            continue;
+
+        const int mx = event.getPosition().x;
+        const bool onLeftEdge  = (mx >= note.bounds.getX() && mx < note.bounds.getX() + resizeHandleWidth);
+        const bool onRightEdge = (mx > note.bounds.getRight() - resizeHandleWidth && mx <= note.bounds.getRight());
+
+        if (onLeftEdge)
+        {
+            setMouseCursor (ReasonResizeCursors::getLeftBracketResizeCursor());
+            return;
+        }
+        if (onRightEdge)
+        {
+            setMouseCursor (ReasonResizeCursors::getRightBracketResizeCursor());
+            return;
+        }
+
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    setMouseCursor (juce::MouseCursor::NormalCursor);
 }
 
 void PianoRollComponent::mouseUp (const juce::MouseEvent&)
@@ -291,6 +454,7 @@ void PianoRollComponent::mouseUp (const juce::MouseEvent&)
 
         isLassoSelecting = false;
         lassoSelection = {};
+        updateVelocitySliderFromSelection();
         repaint();
         return;
     }
@@ -323,14 +487,37 @@ void PianoRollComponent::mouseUp (const juce::MouseEvent&)
             {
                 if (! isNoteSelected (note.state))
                     continue;
-                double newLength = note.lengthSeconds + dragAllResizeDelta;
-                newLength = juce::jmax (0.01, newLength);
+                double newLength = juce::jmax (0.01, note.lengthSeconds + dragAllResizeDelta);
+                newLength = snapLengthToGridIfClose (newLength);
                 session->resizeMidiNote (clipId, note.state, newLength);
             }
         }
         else
         {
-            session->resizeMidiNote (clipId, draggingNoteState, dragPreviewLength);
+            const double snappedLength = snapLengthToGridIfClose (dragPreviewLength);
+            session->resizeMidiNote (clipId, draggingNoteState, snappedLength);
+        }
+    }
+    else if (dragMode == DragMode::resizeLeft && draggingNoteState.isValid())
+    {
+        if (dragAllResizeLeft)
+        {
+            for (const auto& note : dragAllBaseNotes)
+            {
+                if (! isNoteSelected (note.state))
+                    continue;
+                double newStart = juce::jmax (0.0, note.startSeconds + dragAllResizeLeftDeltaStart);
+                double newLength = juce::jmax (0.01, (note.startSeconds + note.lengthSeconds) - newStart);
+                newLength = snapLengthToGridIfClose (newLength);
+                newStart = (note.startSeconds + note.lengthSeconds) - newLength;
+                session->updateMidiNote (clipId, note.state, newStart, newLength, note.noteNumber);
+            }
+        }
+        else
+        {
+            double snappedLength = snapLengthToGridIfClose (dragPreviewLength);
+            double newStart = (dragStartSeconds + dragStartLength) - snappedLength;
+            session->updateMidiNote (clipId, draggingNoteState, newStart, snappedLength, dragPreviewNote);
         }
     }
 
@@ -338,6 +525,7 @@ void PianoRollComponent::mouseUp (const juce::MouseEvent&)
     draggingNoteState = {};
     dragAllNotes = false;
     dragAllResizing = false;
+    lastPlayedPitchDuringDrag = -1;
     repaint();
 }
 
@@ -348,10 +536,10 @@ void PianoRollComponent::mouseWheelMove (const juce::MouseEvent& event, const ju
     if (event.mods.isCommandDown())
     {
         const double zoomFactor = std::pow (1.1, delta * 10.0);
-        const double anchorTime = viewStartSeconds + (event.position.x - keyboardWidth) / pixelsPerSecond;
+        const double anchorTime = viewStartSeconds + (event.position.x - getNoteGridLeft()) / pixelsPerSecond;
         const double newPps = juce::jlimit (minPixelsPerSecond, maxPixelsPerSecond, pixelsPerSecond * zoomFactor);
         pixelsPerSecond = newPps;
-        viewStartSeconds = juce::jmax (0.0, anchorTime - (event.position.x - keyboardWidth) / pixelsPerSecond);
+        viewStartSeconds = juce::jmax (0.0, anchorTime - (event.position.x - getNoteGridLeft()) / pixelsPerSecond);
     }
     else
     {
@@ -370,9 +558,9 @@ void PianoRollComponent::mouseMagnify (const juce::MouseEvent& event, float scal
     if (scaleFactor <= 0.0f)
         return;
 
-    const double anchorTime = viewStartSeconds + (event.position.x - keyboardWidth) / pixelsPerSecond;
+    const double anchorTime = viewStartSeconds + (event.position.x - getNoteGridLeft()) / pixelsPerSecond;
     pixelsPerSecond = juce::jlimit (minPixelsPerSecond, maxPixelsPerSecond, pixelsPerSecond * (double) scaleFactor);
-    viewStartSeconds = juce::jmax (0.0, anchorTime - (event.position.x - keyboardWidth) / pixelsPerSecond);
+    viewStartSeconds = juce::jmax (0.0, anchorTime - (event.position.x - getNoteGridLeft()) / pixelsPerSecond);
 
     if (onViewChanged)
         onViewChanged (viewStartSeconds, pixelsPerSecond);
@@ -491,7 +679,7 @@ std::vector<PianoRollComponent::NoteRect> PianoRollComponent::buildNoteRects() c
         return rects;
 
     auto notes = session->getMidiNotesForClip (clipId);
-    auto noteArea = getLocalBounds().withTrimmedLeft (keyboardWidth);
+    auto noteArea = getLocalBounds().withTrimmedLeft (getNoteGridLeft());
     if (showRuler)
         noteArea.removeFromTop (rulerHeight);
     noteArea.removeFromBottom (sustainLaneHeight);
@@ -509,8 +697,13 @@ std::vector<PianoRollComponent::NoteRect> PianoRollComponent::buildNoteRects() c
             startSeconds = note.startSeconds + dragAllDeltaSeconds;
             noteNumber = note.noteNumber + dragAllDeltaSemitones;
         }
+        if (dragAllResizeLeft && isNoteSelected (note.state))
+        {
+            startSeconds = note.startSeconds + dragAllResizeLeftDeltaStart;
+            lengthSeconds = juce::jmax (0.01, note.lengthSeconds - dragAllResizeLeftDeltaStart);
+        }
 
-        const int x = (int) ((startSeconds - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
+        const int x = (int) ((startSeconds - viewStartSeconds) * pixelsPerSecond) + getNoteGridLeft();
         const int w = (int) juce::jmax (1.0, lengthSeconds * pixelsPerSecond);
 
         noteNumber = juce::jlimit (lowestNote, highestNote, noteNumber);
@@ -600,7 +793,7 @@ void PianoRollComponent::drawNotes (juce::Graphics& g, juce::Rectangle<int>, con
         const bool selected = isNoteSelected (note.info.state);
 
         const float velNorm = (float) juce::jlimit (1, 127, note.info.velocity) / 127.0f;
-        auto base = juce::Colour (0xFF5E4316).interpolatedWith (juce::Colour (0xFFF0C875), velNorm);
+        auto base = juce::Colour (0xFF1A0F05).interpolatedWith (juce::Colour (0xFFFFE8A8), velNorm);
         if (selected)
             base = base.interpolatedWith (juce::Colour (0xFFFFE6AE), 0.4f);
 
@@ -608,6 +801,17 @@ void PianoRollComponent::drawNotes (juce::Graphics& g, juce::Rectangle<int>, con
         g.fillRect (bounds);
         g.setColour (juce::Colour (0xFF2A1C09).withAlpha (0.9f));
         g.drawRect (bounds, selected ? 2 : 1);
+
+        if (showNoteLabels && session != nullptr && bounds.getHeight() >= 8)
+        {
+            g.setColour (juce::Colour (0xFF1C1408));
+            const float fontSize = juce::jlimit (6.0f, 10.0f, (float) bounds.getHeight() - 2.0f);
+            g.setFont (juce::FontOptions (fontSize, juce::Font::bold));
+            g.drawText (session->getNoteNameForPitch (note.info.noteNumber),
+                        bounds.reduced (2, 0),
+                        juce::Justification::centredLeft,
+                        true);
+        }
     }
 }
 
@@ -626,7 +830,7 @@ void PianoRollComponent::drawChordLabels (juce::Graphics& g, juce::Rectangle<int
     const int y = area.getY() + 6;
     for (const auto& label : labels)
     {
-        const int x = (int) ((label.startSeconds - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
+        const int x = (int) ((label.startSeconds - viewStartSeconds) * pixelsPerSecond) + getNoteGridLeft();
         if (x < area.getX() - 40 || x > area.getRight() + 40)
             continue;
 
@@ -664,7 +868,7 @@ void PianoRollComponent::drawRuler (juce::Graphics& g, juce::Rectangle<int> area
     for (double beat = startBeat; beat <= endBeat; beat += 1.0)
     {
         const double timeSeconds = beat * secondsPerBeat;
-        const int x = (int) ((timeSeconds - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
+        const int x = (int) ((timeSeconds - viewStartSeconds) * pixelsPerSecond) + getNoteGridLeft();
         const bool isBar = ((int) beat % juce::jmax (1, beatsPerBar)) == 0;
 
         g.setColour (juce::Colours::white.withAlpha (isBar ? 0.45f : 0.18f));
@@ -722,8 +926,8 @@ void PianoRollComponent::drawSustainLane (juce::Graphics& g, juce::Rectangle<int
 
         if (ev.timeSeconds > lastTime)
         {
-            const int x1 = (int) ((lastTime - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
-            const int x2 = (int) ((ev.timeSeconds - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
+            const int x1 = (int) ((lastTime - viewStartSeconds) * pixelsPerSecond) + getNoteGridLeft();
+            const int x2 = (int) ((ev.timeSeconds - viewStartSeconds) * pixelsPerSecond) + getNoteGridLeft();
             const float height = (float) juce::jlimit (0, area.getHeight(), (int) std::round ((lastValue / 127.0) * area.getHeight()));
             const int y = baseY - (int) height;
 
@@ -737,8 +941,8 @@ void PianoRollComponent::drawSustainLane (juce::Graphics& g, juce::Rectangle<int
 
     if (lastTime < visibleEnd)
     {
-        const int x1 = (int) ((lastTime - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
-        const int x2 = (int) ((visibleEnd - viewStartSeconds) * pixelsPerSecond) + keyboardWidth;
+        const int x1 = (int) ((lastTime - viewStartSeconds) * pixelsPerSecond) + getNoteGridLeft();
+        const int x2 = (int) ((visibleEnd - viewStartSeconds) * pixelsPerSecond) + getNoteGridLeft();
         const float height = (float) juce::jlimit (0, area.getHeight(), (int) std::round ((lastValue / 127.0) * area.getHeight()));
         const int y = baseY - (int) height;
         g.setColour (lastValue >= 64 ? juce::Colour (0xFF7A5A22) : juce::Colour (0xFF3A2F1A));
@@ -767,6 +971,20 @@ double PianoRollComponent::quantizeSeconds (double seconds) const
         return seconds;
 
     return std::round (seconds / grid) * grid;
+}
+
+double PianoRollComponent::snapLengthToGridIfClose (double lengthSeconds) const
+{
+    const double grid = getGridSeconds();
+    if (grid <= 0.0 || lengthSeconds <= 0.0)
+        return lengthSeconds;
+
+    const double rounded = std::round (lengthSeconds / grid) * grid;
+    const double snappedLength = juce::jmax (0.01, rounded);
+    const double threshold = juce::jmax (0.02, grid * 0.15);
+    if (std::fabs (lengthSeconds - snappedLength) <= threshold)
+        return snappedLength;
+    return lengthSeconds;
 }
 
 int PianoRollComponent::getNoteFromY (int y, juce::Rectangle<int> area) const
@@ -806,7 +1024,7 @@ bool PianoRollComponent::isNoteSelected (const juce::ValueTree& state) const
 juce::Rectangle<int> PianoRollComponent::getNoteGridArea() const
 {
     auto area = getLocalBounds();
-    area.removeFromLeft (keyboardWidth);
+    area.removeFromLeft (getNoteGridLeft());
     if (showRuler)
         area.removeFromTop (rulerHeight);
     area.removeFromBottom (sustainLaneHeight);

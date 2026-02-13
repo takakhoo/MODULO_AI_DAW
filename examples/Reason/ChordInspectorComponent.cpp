@@ -1,7 +1,9 @@
 #include "ChordInspectorComponent.h"
+#include "ResizeCursors.h"
 
 ChordInspectorComponent::ChordInspectorComponent()
 {
+    setWantsKeyboardFocus (true);
     addAndMakeVisible (titleLabel);
     titleLabel.setText ("Chords", juce::dontSendNotification);
     titleLabel.setColour (juce::Label::textColourId, juce::Colour (0xFFFFE6B3));
@@ -32,32 +34,15 @@ ChordInspectorComponent::ChordInspectorComponent()
     semitoneDownButton.setTooltip ("Flat (lower by semitone)");
     semitoneDownButton.onClick = [this] { applyChordActionFromButton (ChordCellAction::semitoneDown); };
 
-    struct RootDisplay
+    static const char* sharpLabels[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    static const char* flatLabels[]  = { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+    const bool useSharps = ! juce::String ("Cmaj").containsIgnoreCase ("b");
+    for (int i = 0; i < 12; ++i)
     {
-        const char* label;
-        const char* value;
-    };
-    static constexpr RootDisplay rootDisplays[] =
-    {
-        { "C", "C" },
-        { "C#/Db", "C#" },
-        { "D", "D" },
-        { "D#/Eb", "Eb" },
-        { "E", "E" },
-        { "F", "F" },
-        { "F#/Gb", "F#" },
-        { "G", "G" },
-        { "G#/Ab", "Ab" },
-        { "A", "A" },
-        { "A#/Bb", "Bb" },
-        { "B/Cb", "B" }
-    };
-
-    for (const auto& root : rootDisplays)
-    {
-        auto* b = rootButtons.add (new juce::TextButton (root.label));
-        rootButtonValues.add (root.value);
-        const auto rootValue = juce::String (root.value);
+        const char* label = useSharps ? sharpLabels[i] : flatLabels[i];
+        juce::String rootValue (label);
+        auto* b = rootButtons.add (new juce::TextButton (label));
+        rootButtonValues.add (rootValue);
         b->onClick = [this, rootValue]
         {
             selectedRoot = rootValue;
@@ -106,6 +91,48 @@ ChordInspectorComponent::ChordInspectorComponent()
         addAndMakeVisible (b);
     }
 
+    velocitySlider.setSliderStyle (juce::Slider::LinearVertical);
+    velocitySlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    velocitySlider.setRange (1.0, 127.0, 1.0);
+    velocitySlider.setValue (64.0);
+    velocitySlider.setVisible (false);
+    velocitySlider.onValueChange = [this] { applyVelocitySliderChange(); };
+    addAndMakeVisible (velocitySlider);
+
+    updatePickerButtonStyles();
+}
+
+static bool chordKeyUsesFlats (const juce::String& keySig)
+{
+    const juce::String k = keySig.trim().toLowerCase();
+    if (k.startsWith ("f#") || k.startsWith ("c#"))
+        return false;
+    if (k.startsWith ("f"))
+        return true;
+    if (k.startsWith ("bb") || k.startsWith ("eb") || k.startsWith ("ab")
+        || k.startsWith ("db") || k.startsWith ("gb") || k.startsWith ("cb"))
+        return true;
+    return false;
+}
+
+void ChordInspectorComponent::setKeySignature (const juce::String& keySignature)
+{
+    keySignatureForRoots = keySignature.trim();
+    if (keySignatureForRoots.isEmpty())
+        keySignatureForRoots = "Cmaj";
+
+    static const char* sharpLabels[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    static const char* flatLabels[]  = { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+    const bool useSharps = ! chordKeyUsesFlats (keySignatureForRoots);
+
+    rootButtonValues.clear();
+    for (int i = 0; i < rootButtons.size() && i < 12; ++i)
+    {
+        const char* label = useSharps ? sharpLabels[i] : flatLabels[i];
+        if (auto* b = rootButtons[i])
+            b->setButtonText (label);
+        rootButtonValues.add (juce::String (label));
+    }
     updatePickerButtonStyles();
 }
 
@@ -143,6 +170,7 @@ void ChordInspectorComponent::setPreviewNotes (const std::vector<PreviewNote>& n
     previewNotes = notes;
     if (previewChordSymbol.isEmpty())
         previewChordSymbol = "-";
+    updateVelocitySliderFromSelection();
     repaint (previewBounds.expanded (2));
 }
 
@@ -250,8 +278,17 @@ void ChordInspectorComponent::resized()
     r.removeFromBottom (4);
 
     const int previewHeight = juce::jlimit (160, 290, (int) (r.getHeight() * 0.56f));
-    previewBounds = r.removeFromBottom (previewHeight);
+    auto previewRow = r.removeFromBottom (previewHeight);
     r.removeFromBottom (4);
+    const int velStripW = 24;
+    const bool showVel = ! selectedPreviewNotes.isEmpty() && selectedMeasure > 0 && selectedBeat > 0;
+    velocitySlider.setVisible (showVel);
+    if (showVel)
+    {
+        velocitySlider.setBounds (previewRow.removeFromLeft (velStripW).reduced (2));
+        previewRow.removeFromLeft (2);
+    }
+    previewBounds = previewRow;
 
     const int bannerHeight = juce::jlimit (34, 54, r.getHeight() / 5);
     workshopBannerBounds = r.removeFromBottom (bannerHeight);
@@ -395,36 +432,40 @@ void ChordInspectorComponent::listBoxItemClicked (int row, const juce::MouseEven
     const int beatNumber = beatIndex + 1;
     selectedMeasure = measureNumber;
     selectedBeat = beatNumber;
+    selectedPreviewNotes.clear();
     previewChordSymbol = getChordSymbolAtCell (selectedMeasure, selectedBeat);
     previewCellText = "Selected: Bar " + juce::String (selectedMeasure) + " Beat " + juce::String (selectedBeat);
 
-    juce::String chordText;
-    for (int i = 0; i < symbols.size(); ++i)
-    {
-        if (juce::isPositiveAndBelow (i, measures.size()) && juce::isPositiveAndBelow (i, beats.size())
-            && measures[i] == selectedMeasure && beats[i] == selectedBeat)
+        juce::String chordText;
+        for (int i = 0; i < symbols.size(); ++i)
         {
-            chordText = symbols[i].trim();
-            break;
-        }
-    }
-
-    if (chordText.isNotEmpty())
-    {
-        const juce::StringArray knownRoots { "C#", "Db", "D#", "Eb", "F#", "Gb", "G#", "Ab", "A#", "Bb", "Cb", "B#", "C", "D", "E", "F", "G", "A", "B" };
-        juce::String matchedRoot;
-        for (const auto& root : knownRoots)
-        {
-            if (chordText.startsWithIgnoreCase (root))
+            if (juce::isPositiveAndBelow (i, measures.size()) && juce::isPositiveAndBelow (i, beats.size())
+                && measures[i] == selectedMeasure && beats[i] == selectedBeat)
             {
-                matchedRoot = root;
+                chordText = symbols[i].trim();
                 break;
             }
         }
 
-        if (matchedRoot.isNotEmpty())
+    if (chordText.isNotEmpty())
+    {
+        static const char* allRootNames[] = { "C", "C#", "Db", "D", "D#", "Eb", "E", "F", "F#", "Gb", "G", "G#", "Ab", "A", "A#", "Bb", "B", "Cb", "B#" };
+        static const int pitchIndexForRoot[] = { 0, 1, 1, 2, 3, 3, 4, 5, 6, 6, 7, 8, 8, 9, 10, 10, 11, 11, 11 };
+        juce::String matchedRoot;
+        int matchedPitchIndex = -1;
+        for (size_t r = 0; r < sizeof (allRootNames) / sizeof (allRootNames[0]); ++r)
         {
-            selectedRoot = matchedRoot;
+            if (chordText.startsWithIgnoreCase (juce::String (allRootNames[r])))
+            {
+                matchedRoot = allRootNames[r];
+                matchedPitchIndex = pitchIndexForRoot[r];
+                break;
+            }
+        }
+
+        if (matchedRoot.isNotEmpty() && matchedPitchIndex >= 0 && matchedPitchIndex < rootButtonValues.size())
+        {
+            selectedRoot = rootButtonValues[matchedPitchIndex];
             auto suffix = chordText.substring (matchedRoot.length()).trim().toLowerCase();
             if (suffix == "maj")
                 suffix = "";
@@ -575,6 +616,15 @@ void ChordInspectorComponent::drawPreview (juce::Graphics& g) const
     highPitch = juce::jmin (127, highPitch + 1);
     const int pitchSpan = juce::jmax (1, highPitch - lowPitch + 1);
 
+    // Grid lines (vertical) at grid beats to aid quantization
+    const double gridBeats = getGridBeats();
+    for (double b = 0.0; b <= endBeat + 0.001; b += gridBeats)
+    {
+        const float gx = (float) inner.getX() + (float) (b / endBeat) * (float) inner.getWidth();
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.drawVerticalLine ((int) gx, (float) inner.getY(), (float) inner.getBottom());
+    }
+
     for (int p = lowPitch; p <= highPitch; ++p)
     {
         const float y = (float) inner.getBottom() - (float) (p - lowPitch + 1) * (float) inner.getHeight() / (float) pitchSpan;
@@ -583,24 +633,54 @@ void ChordInspectorComponent::drawPreview (juce::Graphics& g) const
         g.fillRect (inner.getX(), (int) y, inner.getWidth(), juce::jmax (1, inner.getHeight() / pitchSpan));
     }
 
+    int idx = 0;
     for (const auto& n : previewNotes)
     {
-        const float x = (float) inner.getX() + (float) (n.startBeats / endBeat) * (float) inner.getWidth();
-        const float w = juce::jmax (2.0f, (float) (n.lengthBeats / endBeat) * (float) inner.getWidth());
+        const bool isDragging = (idx == draggingPreviewNoteIndex);
+        double startBeats = n.startBeats;
+        double lengthBeats = n.lengthBeats;
+        if (isDragging && previewDragMode == PreviewDragMode::resize)
+        {
+            startBeats = dragStartPreviewTime;
+            lengthBeats = dragPreviewLength;
+        }
+        else if (isDragging && previewDragMode == PreviewDragMode::moveStart)
+        {
+            startBeats = dragPreviewStart;
+            lengthBeats = juce::jmax (0.0625, (dragStartPreviewTime + dragStartPreviewLength) - dragPreviewStart);
+        }
+        const bool isSelected = selectedPreviewNotes.contains (idx);
+
+        const float x = (float) inner.getX() + (float) (startBeats / endBeat) * (float) inner.getWidth();
+        const float w = juce::jmax (2.0f, (float) (lengthBeats / endBeat) * (float) inner.getWidth());
         const float yTop = (float) inner.getBottom() - (float) (n.pitch - lowPitch + 1) * (float) inner.getHeight() / (float) pitchSpan;
         const float yBottom = (float) inner.getBottom() - (float) (n.pitch - lowPitch) * (float) inner.getHeight() / (float) pitchSpan;
         auto noteRect = juce::Rectangle<float> (x, yTop + 0.7f, w, juce::jmax (2.0f, yBottom - yTop - 1.4f));
-        g.setColour (juce::Colour (0xFFB98A2E));
-        g.fillRoundedRectangle (noteRect, 1.8f);
-        g.setColour (juce::Colour (0xFFF3D18A));
-        g.drawRoundedRectangle (noteRect, 1.8f, 0.8f);
 
+        if (isSelected)
+            g.setColour (juce::Colour (0xFFD4A85A));
+        else
+            g.setColour (juce::Colour (0xFFB98A2E));
+        g.fillRoundedRectangle (noteRect, 1.8f);
+        g.setColour (isSelected ? juce::Colour (0xFFFFE6B3) : juce::Colour (0xFFF3D18A));
+        g.drawRoundedRectangle (noteRect, 1.8f, isSelected ? 1.2f : 0.8f);
+
+        // Draw resize handles (left = start time, right = length)
+        if (isSelected && noteRect.getWidth() > 12.0f)
+        {
+            g.setColour (juce::Colour (0xFFFFE6B3));
+            g.fillRect (noteRect.getX(), noteRect.getY(), 4.0f, noteRect.getHeight());
+            g.fillRect (noteRect.getRight() - 6.0f, noteRect.getY(), 4.0f, noteRect.getHeight());
+        }
+
+        // Note label on MIDI block (always shown in chord workshop)
         g.setColour (juce::Colour (0xFF1C1408));
         g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
         g.drawText (getNoteNameWithOctave (n.pitch),
                     noteRect.toNearestInt().reduced (2, 0),
                     juce::Justification::centredLeft,
                     true);
+        ++idx;
     }
 }
 
@@ -615,14 +695,413 @@ juce::String ChordInspectorComponent::getChordSymbolAtCell (int measure, int bea
     return {};
 }
 
-juce::String ChordInspectorComponent::getNoteNameWithOctave (int midiNote)
+juce::String ChordInspectorComponent::getNoteNameWithOctave (int midiNote) const
 {
-    static constexpr const char* names[] =
-    {
-        "C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B"
-    };
-
+    const bool useSharp = ! chordKeyUsesFlats (keySignatureForRoots);
+    static constexpr const char* sharpNames[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    static constexpr const char* flatNames[]  = { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
     const int clamped = juce::jlimit (0, 127, midiNote);
     const int octave = clamped / 12 - 1;
-    return juce::String (names[clamped % 12]) + juce::String (octave);
+    const char* name = useSharp ? sharpNames[clamped % 12] : flatNames[clamped % 12];
+    return juce::String (name) + juce::String (octave);
+}
+
+juce::Rectangle<int> ChordInspectorComponent::getPreviewNoteGridInner() const
+{
+    if (previewBounds.isEmpty())
+        return {};
+    auto area = previewBounds.reduced (1);
+    auto inner = area.reduced (6, 4);
+    inner.removeFromTop (16);
+    inner.removeFromTop (2);
+    return inner;
+}
+
+std::vector<ChordInspectorComponent::PreviewNoteRect> ChordInspectorComponent::getPreviewNoteRects() const
+{
+    std::vector<PreviewNoteRect> out;
+    auto inner = getPreviewNoteGridInner();
+    if (inner.getHeight() < 20 || previewNotes.empty())
+        return out;
+
+    int lowPitch = 127, highPitch = 0;
+    double endBeat = 1.0;
+    for (const auto& n : previewNotes)
+    {
+        lowPitch = juce::jmin (lowPitch, n.pitch);
+        highPitch = juce::jmax (highPitch, n.pitch);
+        endBeat = juce::jmax (endBeat, n.startBeats + n.lengthBeats);
+    }
+    lowPitch = juce::jmax (0, lowPitch - 1);
+    highPitch = juce::jmin (127, highPitch + 1);
+    const int pitchSpan = juce::jmax (1, highPitch - lowPitch + 1);
+
+    int idx = 0;
+    for (const auto& n : previewNotes)
+    {
+        const float x = (float) inner.getX() + (float) (n.startBeats / endBeat) * (float) inner.getWidth();
+        const float w = juce::jmax (2.0f, (float) (n.lengthBeats / endBeat) * (float) inner.getWidth());
+        const float yTop = (float) inner.getBottom() - (float) (n.pitch - lowPitch + 1) * (float) inner.getHeight() / (float) pitchSpan;
+        const float yBottom = (float) inner.getBottom() - (float) (n.pitch - lowPitch) * (float) inner.getHeight() / (float) pitchSpan;
+        PreviewNoteRect pr;
+        pr.noteIndex = idx++;
+        pr.bounds = juce::Rectangle<float> (x, yTop + 0.7f, w, juce::jmax (2.0f, yBottom - yTop - 1.4f));
+        out.push_back (pr);
+    }
+    return out;
+}
+
+int ChordInspectorComponent::getPitchFromPreviewY (float yInInner) const
+{
+    auto inner = getPreviewNoteGridInner();
+    if (inner.getHeight() < 20 || previewNotes.empty())
+        return 60;
+
+    int lowPitch = 127, highPitch = 0;
+    for (const auto& n : previewNotes)
+    {
+        lowPitch = juce::jmin (lowPitch, n.pitch);
+        highPitch = juce::jmax (highPitch, n.pitch);
+    }
+    lowPitch = juce::jmax (0, lowPitch - 1);
+    highPitch = juce::jmin (127, highPitch + 1);
+    const int pitchSpan = juce::jmax (1, highPitch - lowPitch + 1);
+    const float rel = (float) (inner.getBottom() - yInInner) / (float) inner.getHeight();
+    const int p = lowPitch + (int) (rel * (float) pitchSpan);
+    return juce::jlimit (0, 127, p);
+}
+
+double ChordInspectorComponent::getTimeFromPreviewX (float xInInner) const
+{
+    auto inner = getPreviewNoteGridInner();
+    if (inner.getWidth() < 20 || previewNotes.empty())
+        return 0.0;
+
+    double endBeat = 1.0;
+    for (const auto& n : previewNotes)
+        endBeat = juce::jmax (endBeat, n.startBeats + n.lengthBeats);
+
+    const float rel = (xInInner - (float) inner.getX()) / (float) inner.getWidth();
+    return juce::jmax (0.0, rel * endBeat);
+}
+
+double ChordInspectorComponent::getGridBeats() const
+{
+    return 0.25; // 16th note grid
+}
+
+double ChordInspectorComponent::snapLengthBeatsToGridIfClose (double lengthBeats) const
+{
+    const double gridBeats = getGridBeats();
+    if (gridBeats <= 0.0 || lengthBeats <= 0.0)
+        return lengthBeats;
+    const double rounded = std::round (lengthBeats / gridBeats) * gridBeats;
+    const double snapped = juce::jmax (0.0625, rounded);
+    const double threshold = juce::jmax (0.02, gridBeats * 0.15);
+    if (std::fabs (lengthBeats - snapped) <= threshold)
+        return snapped;
+    return lengthBeats;
+}
+
+double ChordInspectorComponent::snapStartBeatsToGridIfClose (double startBeats) const
+{
+    const double gridBeats = getGridBeats();
+    if (gridBeats <= 0.0)
+        return startBeats;
+    const double rounded = std::round (startBeats / gridBeats) * gridBeats;
+    const double threshold = juce::jmax (0.02, gridBeats * 0.15);
+    if (std::fabs (startBeats - rounded) <= threshold)
+        return juce::jmax (0.0, rounded);
+    return startBeats;
+}
+
+void ChordInspectorComponent::mouseDown (const juce::MouseEvent& event)
+{
+    if (! previewBounds.contains (event.getPosition()))
+    {
+        grabKeyboardFocus();
+        return;
+    }
+
+    grabKeyboardFocus();
+    auto inner = getPreviewNoteGridInner();
+    if (inner.getHeight() < 20 || selectedMeasure < 1 || selectedBeat < 1)
+        return;
+
+    // Control-click to add note
+    if (event.mods.isCtrlDown() || event.mods.isCommandDown())
+    {
+        if (onChordPreviewNoteAdd != nullptr)
+        {
+            const int pitch = getPitchFromPreviewY ((float) event.getPosition().y);
+            const double clickTime = getTimeFromPreviewX ((float) event.getPosition().x);
+            const double gridBeats = getGridBeats();
+            const double quantizedTime = std::round (clickTime / gridBeats) * gridBeats;
+            const double length = gridBeats;
+            onChordPreviewNoteAdd (selectedMeasure, selectedBeat, pitch, quantizedTime, length);
+            if (onPreviewNotePlay != nullptr)
+                onPreviewNotePlay (pitch);
+        }
+        return;
+    }
+
+    if (previewNotes.empty())
+        return;
+
+    auto rects = getPreviewNoteRects();
+    for (const auto& pr : rects)
+    {
+        if (! pr.bounds.contains (event.getPosition().toFloat()))
+            continue;
+
+        // Check if clicking on resize handle (right edge) or start handle (left edge)
+        const float resizeHandleWidth = 6.0f;
+        const float mx = (float) event.getPosition().x;
+        const bool onResizeHandle = mx >= pr.bounds.getRight() - resizeHandleWidth;
+        const bool onStartHandle = (mx >= pr.bounds.getX() && mx < pr.bounds.getX() + resizeHandleWidth);
+
+        if (event.mods.isCommandDown() || event.mods.isShiftDown())
+        {
+            // Multi-select
+            if (selectedPreviewNotes.contains (pr.noteIndex))
+                selectedPreviewNotes.removeAllInstancesOf (pr.noteIndex);
+            else
+                selectedPreviewNotes.addIfNotAlreadyThere (pr.noteIndex);
+        }
+        else
+        {
+            // Single select
+            if (! selectedPreviewNotes.contains (pr.noteIndex) || selectedPreviewNotes.size() <= 1)
+            {
+                selectedPreviewNotes.clear();
+                selectedPreviewNotes.add (pr.noteIndex);
+            }
+        }
+
+        draggingPreviewNoteIndex = pr.noteIndex;
+        if (onResizeHandle)
+            previewDragMode = PreviewDragMode::resize;
+        else if (onStartHandle)
+            previewDragMode = PreviewDragMode::moveStart;
+        else
+            previewDragMode = PreviewDragMode::move;
+
+        if (juce::isPositiveAndBelow (pr.noteIndex, (int) previewNotes.size()))
+        {
+            dragStartPreviewTime = previewNotes[(size_t) pr.noteIndex].startBeats;
+            dragStartPreviewLength = previewNotes[(size_t) pr.noteIndex].lengthBeats;
+            dragPreviewLength = dragStartPreviewLength;
+            dragPreviewStart = dragStartPreviewTime;
+            if (onPreviewNotePlay != nullptr)
+                onPreviewNotePlay (previewNotes[(size_t) pr.noteIndex].pitch);
+        }
+
+        updateVelocitySliderFromSelection();
+        repaint (previewBounds.expanded (2));
+        return;
+    }
+
+    // Clicked on empty space - clear selection
+    if (! event.mods.isCommandDown() && ! event.mods.isShiftDown())
+        selectedPreviewNotes.clear();
+    updateVelocitySliderFromSelection();
+    repaint (previewBounds.expanded (2));
+}
+
+void ChordInspectorComponent::mouseMove (const juce::MouseEvent& event)
+{
+    if (! previewBounds.contains (event.getPosition()))
+    {
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    auto inner = getPreviewNoteGridInner();
+    if (inner.getHeight() < 20 || previewNotes.empty() || ! inner.contains (event.getPosition()))
+    {
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    const float resizeHandleWidth = 6.0f;
+    const auto rects = getPreviewNoteRects();
+
+    for (const auto& pr : rects)
+    {
+        if (! pr.bounds.contains (event.getPosition().toFloat()))
+            continue;
+
+        const float mx = (float) event.getPosition().x;
+        const bool onLeftEdge  = (mx >= pr.bounds.getX() && mx < pr.bounds.getX() + resizeHandleWidth);
+        const bool onRightEdge = (mx > pr.bounds.getRight() - resizeHandleWidth && mx <= pr.bounds.getRight());
+
+        if (onLeftEdge)
+        {
+            setMouseCursor (ReasonResizeCursors::getLeftBracketResizeCursor());
+            return;
+        }
+        if (onRightEdge)
+        {
+            setMouseCursor (ReasonResizeCursors::getRightBracketResizeCursor());
+            return;
+        }
+
+        setMouseCursor (juce::MouseCursor::NormalCursor);
+        return;
+    }
+
+    setMouseCursor (juce::MouseCursor::NormalCursor);
+}
+
+void ChordInspectorComponent::mouseDrag (const juce::MouseEvent& event)
+{
+    if (draggingPreviewNoteIndex < 0 || selectedMeasure < 1 || selectedBeat < 1)
+        return;
+
+    auto inner = getPreviewNoteGridInner();
+    if (inner.getHeight() < 20 || ! inner.contains (event.getPosition()))
+        return;
+
+    if (previewDragMode == PreviewDragMode::move && onChordPreviewNotePitchChange != nullptr)
+    {
+        const int newPitch = getPitchFromPreviewY ((float) event.getPosition().y);
+        if (newPitch != lastPreviewDragPitch)
+        {
+            lastPreviewDragPitch = newPitch;
+            if (onPreviewNotePlay != nullptr)
+                onPreviewNotePlay (newPitch);
+            onChordPreviewNotePitchChange (selectedMeasure, selectedBeat, draggingPreviewNoteIndex, newPitch);
+        }
+    }
+    else if (previewDragMode == PreviewDragMode::resize && onChordPreviewNoteResize != nullptr)
+    {
+        if (juce::isPositiveAndBelow (draggingPreviewNoteIndex, (int) previewNotes.size()))
+        {
+            const double clickTime = getTimeFromPreviewX ((float) event.getPosition().x);
+            const double newLength = juce::jmax (0.0625, clickTime - dragStartPreviewTime);
+            dragPreviewLength = newLength;
+            repaint (previewBounds.expanded (2));
+        }
+    }
+    else if (previewDragMode == PreviewDragMode::moveStart)
+    {
+        if (juce::isPositiveAndBelow (draggingPreviewNoteIndex, (int) previewNotes.size()))
+        {
+            const double clickTime = getTimeFromPreviewX ((float) event.getPosition().x);
+            const double noteEnd = dragStartPreviewTime + dragStartPreviewLength;
+            dragPreviewStart = juce::jmax (0.0, juce::jmin (noteEnd - 0.0625, clickTime));
+            repaint (previewBounds.expanded (2));
+        }
+    }
+}
+
+void ChordInspectorComponent::mouseUp (const juce::MouseEvent& event)
+{
+    juce::ignoreUnused (event);
+
+    if (previewDragMode == PreviewDragMode::resize && draggingPreviewNoteIndex >= 0
+        && onChordPreviewNoteResize != nullptr && selectedMeasure > 0 && selectedBeat > 0)
+    {
+        const double lengthToApply = snapLengthBeatsToGridIfClose (dragPreviewLength);
+        onChordPreviewNoteResize (selectedMeasure, selectedBeat, draggingPreviewNoteIndex, lengthToApply);
+    }
+    if (previewDragMode == PreviewDragMode::moveStart && draggingPreviewNoteIndex >= 0
+        && onChordPreviewNoteStartChange != nullptr && selectedMeasure > 0 && selectedBeat > 0)
+    {
+        const double startToApply = snapStartBeatsToGridIfClose (dragPreviewStart);
+        onChordPreviewNoteStartChange (selectedMeasure, selectedBeat, draggingPreviewNoteIndex, startToApply);
+    }
+
+    draggingPreviewNoteIndex = -1;
+    lastPreviewDragPitch = -1;
+    previewDragMode = PreviewDragMode::none;
+    dragPreviewLength = 0.0;
+    repaint (previewBounds.expanded (2));
+}
+
+bool ChordInspectorComponent::keyPressed (const juce::KeyPress& key)
+{
+    if (selectedMeasure < 1 || selectedBeat < 1)
+        return false;
+
+    // Delete key
+    if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
+    {
+        if (! selectedPreviewNotes.isEmpty() && onChordPreviewNoteDelete != nullptr)
+        {
+            auto toDelete = selectedPreviewNotes;
+            for (int i = toDelete.size() - 1; i >= 0; --i)
+                onChordPreviewNoteDelete (selectedMeasure, selectedBeat, toDelete[i]);
+            selectedPreviewNotes.clear();
+            return true;
+        }
+        return false;
+    }
+
+    // Quantize (Q key)
+    const int code = key.getKeyCode();
+    if (! key.getModifiers().isAnyModifierKeyDown() && (code == 'q' || code == 'Q'))
+    {
+        if (onChordPreviewNotesQuantize != nullptr)
+        {
+            const double gridBeats = getGridBeats();
+            onChordPreviewNotesQuantize (selectedMeasure, selectedBeat, gridBeats);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void ChordInspectorComponent::updateVelocitySliderFromSelection()
+{
+    if (selectedMeasure < 1 || selectedBeat < 1 || previewNotes.empty())
+    {
+        velocitySlider.setVisible (false);
+        return;
+    }
+    if (selectedPreviewNotes.isEmpty())
+    {
+        velocitySlider.setVisible (false);
+        return;
+    }
+    int sum = 0;
+    int count = 0;
+    for (const int idx : selectedPreviewNotes)
+    {
+        if (juce::isPositiveAndBelow (idx, (int) previewNotes.size()))
+        {
+            sum += previewNotes[(size_t) idx].velocity;
+            ++count;
+        }
+    }
+    if (count == 0)
+    {
+        velocitySlider.setVisible (false);
+        return;
+    }
+    const int avg = sum / count;
+    velocitySliderLastValue = (double) juce::jlimit (1, 127, avg);
+    velocitySlider.setValue (velocitySliderLastValue, juce::dontSendNotification);
+    velocitySlider.setVisible (true);
+    resized();
+}
+
+void ChordInspectorComponent::applyVelocitySliderChange()
+{
+    if (selectedMeasure < 1 || selectedBeat < 1 || onChordPreviewNoteVelocityChange == nullptr)
+        return;
+    if (selectedPreviewNotes.isEmpty())
+        return;
+    const double newVal = velocitySlider.getValue();
+    const int delta = (int) std::round (newVal - velocitySliderLastValue);
+    velocitySliderLastValue = newVal;
+    for (const int idx : selectedPreviewNotes)
+    {
+        if (! juce::isPositiveAndBelow (idx, (int) previewNotes.size()))
+            continue;
+        const int newVel = juce::jlimit (1, 127, previewNotes[(size_t) idx].velocity + delta);
+        onChordPreviewNoteVelocityChange (selectedMeasure, selectedBeat, idx, newVel);
+    }
+    repaint (previewBounds.expanded (2));
 }

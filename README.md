@@ -30,99 +30,53 @@ In short, MODULO is designed to return what deterministic generation leaves on t
 
 ## Directions and Hotkeys
 
-Core interaction directions:
+- **Tracks:** Reorder by dragging in the left track controller. **Piano Roll:** open/close with `E`; edit notes in-grid (drag to move, drag left/right edges to resize; velocity slider when notes selected). **Chord Workshop:** click a cell to target it, then use the persistent edit buttons and preview (drag note edges to resize or move start; velocity slider when notes selected).
 
-- Reorder tracks by dragging a track from the left track controller area up/down.
-- Open/close Piano Roll for selected clip with `E`, then edit notes directly in-grid.
-- Click a chord cell in Chord Workshop to target edits, then use persistent edit buttons below.
+### Command reference
 
-Global / arrangement hotkeys:
+<sub>
 
-- `Space`: toggle play/stop, and if recording is active, stop + commit recording take.
-- `R`: start recording (does not toggle recording off).
-- `L`: create loop copies (adds 5 duplicates of selected MIDI clip forward in time).
-- `U`: move all MIDI notes in selected track up one octave.
-- `D`: move all MIDI notes in selected track down one octave.
-- `Delete` / `Backspace`: delete selected chord cell (if any), else selected clip, else selected track.
-- `I`: add idea marker at current insertion time.
-- `E`: toggle Piano Roll for currently selected clip.
+| Action | Key / gesture |
+|--------|----------------|
+| **Transport & arrangement** | |
+| Play / stop | `Space` |
+| Stop + commit take (while recording) | `Space` |
+| Start recording | `R` |
+| Loop copies (5× selected MIDI clip) | `L` |
+| Transpose track up / down 1 octave | `U` / `D` |
+| Add idea marker | `I` |
+| Toggle Piano Roll for selected clip | `E` |
+| Delete chord cell → clip → track | `Delete` / `Backspace` |
+| **Project** | |
+| New / Open / Save / Save As | `Cmd+N` / `Cmd+O` / `Cmd+S` / `Cmd+Shift+S` |
+| Undo / Redo | `Cmd+Z` / `Cmd+Shift+Z` |
+| Duplicate track | `Cmd+D` |
+| Copy / paste clip at cursor | `Cmd+C` / `Cmd+V` |
+| **Piano Roll** (when focused) | |
+| Add note at click | `Cmd+Click` or `Ctrl+Click` |
+| Quantize selected notes | `Q` |
+| Select all notes | `Cmd+A` |
+| Copy / paste notes | `Cmd+C` / `Cmd+V` |
+| Delete selected note(s) | `Delete` / `Backspace` |
+| Horizontal scroll / zoom | Mouse wheel / `Cmd+wheel` (or pinch) |
+| **Chord Workshop** (preview focused) | |
+| Delete selected note(s) | `Delete` / `Backspace` |
+| Quantize notes in cell | `Q` |
 
-Project/session shortcuts:
+</sub>
 
-- `Cmd+N`: new project.
-- `Cmd+O`: open project.
-- `Cmd+S`: save project.
-- `Cmd+Shift+S`: save project as.
-- `Cmd+Z`: undo (preserves open Piano Roll state).
-- `Cmd+Shift+Z`: redo (preserves open Piano Roll state).
-- `Cmd+D`: duplicate selected track.
-- `Cmd+C` / `Cmd+V`: copy/paste selected clip at cursor position.
+## Research positioning and novelty
 
-Piano Roll shortcuts and gestures:
+MODULO’s core claim: **RL-driven harmony generation becomes much more useful when paired with an HCI layer that encodes expert music-theory workflows.** Model intelligence and interface intelligence are co-dependent.
 
-- `Cmd+Click` (or `Ctrl+Click`) in note grid: add a note at clicked position using current grid length.
-- `Q`: quantize selected notes to current grid subdivision.
-- `Cmd+A`: select all notes in active Piano Roll clip.
-- `Cmd+C` / `Cmd+V`: copy/paste selected notes in Piano Roll.
-- `Delete` / `Backspace`: delete selected note(s).
-- Mouse wheel / trackpad: horizontal scroll timeline in Piano Roll.
-- `Cmd + Mouse wheel` (or pinch zoom): horizontal zoom around cursor anchor.
+**Novelty (without repetition):**
 
-## Deep Learning + HCI Thesis Positioning
+- **Multi-hypothesis harmony:** Melody-conditioned generation returns several viable accompaniments as parallel, comparable MIDI tracks—not a single one-shot prediction. The musician chooses and refines in arrangement context.
+- **Chord Workshop as theory-first HCI:** A persistent bar/beat grid where users edit generated harmony with real theory operations (quality, root, inversion, octave, semitone, block/arpeggio, double-time). Controls stay visible; chord preview and playback feedback are live. Expert users operate in theory terms without losing DAW immediacy.
+- **Production loop, not demo:** The loop runs inside a real DAW—recording, plugins, transport, timeline. Outputs are immediately playable and editable; candidate ranking happens by the musician during playback, not by model confidence alone.
+- **Controlled diversity:** Multiple candidates plus Chord Workshop transformations reduce mode collapse and keep harmonic function, voicing, and timing inspectable and controllable.
 
-MODULO is centered on a single research claim: **reinforcement-learning-driven harmony generation becomes substantially more useful when paired with an HCI layer that encodes expert music-theory workflows**.
-
-- **Deep learning core:** MODULO's harmony backend is informed by ReaLchords, which uses reinforcement learning for adaptive online accompaniment under temporal and harmonic constraints.
-- **HCI core:** model outputs are exposed as editable harmonic hypotheses in the Chord Workshop, where musicians inspect, transform, and compare options at bar/beat resolution.
-- **Joint novelty:** MODULO evaluates success by interaction quality in addition to output quality: decision speed, editability, and theory-consistent control.
-
-This is the key thesis framing: model intelligence and interface intelligence are co-dependent.
-
-## Novelty and Thesis Focus
-
-The contribution is not isolated "AI chord generation." It is a musician-first system where RL-informed harmony generation, music-theory operations, and timeline context stay unified in one DAW loop.
-
-Core contribution axes:
-
-- **Multi-hypothesis harmony, not one-shot prediction:** melody-conditioned generation returns several viable accompaniments as parallel, comparable tracks.
-- **Chord Workshop post-generation transformations:** users edit generated harmony with real theory operations (quality, inversion, octave, semitone, block/arpeggio, double-time) directly on bar/beat cells.
-- **DAW-native control loop:** outputs are instantly playable/editable MIDI in arrangement context, with transport and instrumentation feedback.
-- **Musician agency at expert level:** harmonic function, voicing movement, and timing remain inspectable and controllable throughout.
-
-This is the thesis direction: expanding harmonic decision space for advanced users who think in functional harmony, voice-leading, and arrangement context, while keeping iteration speed high enough for practical songwriting and production.
-
-### Why this matters for Music AI (hard claim)
-
-- **From answer-machine to co-creator:** the model proposes; the musician decides.
-- **From offline demo to production runtime:** the loop runs in a real DAW (recording, plugins, transport, timeline).
-- **From generic output to controlled diversity:** multiple candidates plus Chord Workshop transformations reduce mode collapse and improve controllability.
-- **From black-box output to expert operation:** music-theory reasoning is first-class, not post-hoc.
-
-## Music-Theory-First Interaction Design (HCI Novelty)
-
-MODULO's HCI contribution is the **Chord Workshop**: a persistent, grid-aware harmony environment that tightly couples symbolic intent, temporal structure, and audible feedback.
-
-- **Bar/beat cell model:** Each row is a bar, subdivided by beats, so harmony edits occur where musicians already reason temporally.
-- **Persistent controls instead of hidden popups:** Theory operations remain visible and discoverable, reducing interaction overhead and mode confusion.
-- **Live chord-state feedback:** The workshop tracks currently playing chord position and displays chord MIDI preview with pitch labels, so edits can be evaluated while transport is running.
-- **Embodied theory operations:** Actions such as inversion, semitone shift, and quality changes manipulate the actual MIDI realizations and preserve timing semantics.
-- **Comparative workflow support:** Multiple generated chord-option tracks can be inspected and reshaped quickly, enabling A/B-style harmonic decision making.
-
-This is the HCI novelty: expert users operate in theory terms without losing DAW immediacy, and AI outputs remain transparent to musical reasoning.
-
-## AI Technical Deep Dive
-
-MODULO's harmony subsystem follows an online accompaniment framing rather than an offline "generate entire song and accept" paradigm.
-
-- **Reinforcement-learning-informed generation objective:** the ReaLchords direction emphasizes adaptive accompaniment quality over time, aligning chord decisions with evolving melodic context.
-- **Online conditioning pipeline:** melody is converted into a time-stepped representation suitable for local model serving, preserving strict alignment to timeline context.
-- **Multi-hypothesis generation:** the system requests several accompaniment candidates for the same melody and instantiates each directly as an editable MIDI track.
-- **Timeline-faithful reconstruction:** model-domain events are converted back into beat-accurate DAW MIDI clips with bar/beat coherence.
-- **Chord Workshop post-generation transformations:** generated chords are transformed with deterministic operations (quality/root/inversion/octave/semitone/block/arpeggio/double-time) while preserving cell semantics.
-- **Gesture-level rendering controls:** block/arpeggio behavior, beat-locked arpeggio timing, and sustain-shaping help close the gap between model output and production-ready material.
-- **In-context evaluation loop:** candidate ranking is performed by the musician during playback in arrangement context, not by model confidence alone.
-
-The net effect is a hybrid intelligence loop: deep-learning-based option discovery plus Chord Workshop theory operations for controlled refinement.
+**Technical outline:** The harmony backend is informed by ReaLchords (RL for adaptive online accompaniment). Melody is converted to a time-stepped representation for local serving; the system requests several candidates per melody and instantiates each as an editable MIDI track. Chord Workshop then applies deterministic theory operations (quality, inversion, block/arpeggio, etc.) with beat-accurate semantics. The result is a hybrid loop: deep-learning option discovery plus theory operations for refinement.
 
 ## Architecture Overview
 

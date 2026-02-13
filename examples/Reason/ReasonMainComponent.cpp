@@ -297,6 +297,7 @@ ReasonMainComponent::ReasonMainComponent()
     transportBar.setBarsText ("Bar 1 | Beat 1");
     transportBar.setTimeSignatureText (session.getTimeSignature());
     transportBar.setKeySignatureText (session.getKeySignature());
+    chordInspector.setKeySignature (session.getKeySignature());
     transportBar.setRecordActive (session.isRecording());
     transportBar.setMidiInputText ("MIDI: " + session.getSelectedMidiInputName());
     transportBar.setMetronomeActive (session.isMetronomeEnabled());
@@ -371,7 +372,8 @@ ReasonMainComponent::ReasonMainComponent()
     transportBar.onKeySignatureChanged = [this] (const juce::String& text)
     {
         session.setKeySignature (text);
-        transportBar.setKeySignatureText (session.getKeySignature());
+        transportBar.setKeySignatureText (text);
+        chordInspector.setKeySignature (text);
     };
 
     trackList.onSelectionChanged = [this] (int index)
@@ -509,8 +511,111 @@ ReasonMainComponent::ReasonMainComponent()
     {
         std::vector<ChordInspectorComponent::PreviewNote> preview;
         for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
-            preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats });
+            preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
         chordInspector.setPreviewNotes (preview);
+    };
+
+    chordInspector.onChordPreviewNotePitchChange = [this] (int measure, int beat, int noteIndexInCell, int newPitch)
+    {
+        if (session.updateChordCellNotePitch (session.getSelectedTrack(), measure, beat, noteIndexInCell, newPitch))
+        {
+            std::vector<ChordInspectorComponent::PreviewNote> preview;
+            for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+                preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
+            chordInspector.setPreviewNotes (preview);
+            timeline.repaint();
+            if (pianoRollVisible)
+                pianoRoll.repaint();
+        }
+    };
+
+    chordInspector.onChordPreviewNoteAdd = [this] (int measure, int beat, int pitch, double startBeats, double lengthBeats)
+    {
+        if (session.addChordCellNote (session.getSelectedTrack(), measure, beat, pitch, startBeats, lengthBeats))
+        {
+            std::vector<ChordInspectorComponent::PreviewNote> preview;
+            for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+                preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
+            chordInspector.setPreviewNotes (preview);
+            timeline.repaint();
+            if (pianoRollVisible)
+                pianoRoll.repaint();
+        }
+    };
+
+    chordInspector.onChordPreviewNoteDelete = [this] (int measure, int beat, int noteIndexInCell)
+    {
+        if (session.deleteChordCellNote (session.getSelectedTrack(), measure, beat, noteIndexInCell))
+        {
+            std::vector<ChordInspectorComponent::PreviewNote> preview;
+            for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+                preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
+            chordInspector.setPreviewNotes (preview);
+            timeline.repaint();
+            if (pianoRollVisible)
+                pianoRoll.repaint();
+        }
+    };
+
+    chordInspector.onChordPreviewNoteResize = [this] (int measure, int beat, int noteIndexInCell, double newLengthBeats)
+    {
+        if (session.resizeChordCellNote (session.getSelectedTrack(), measure, beat, noteIndexInCell, newLengthBeats))
+        {
+            std::vector<ChordInspectorComponent::PreviewNote> preview;
+            for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+                preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
+            chordInspector.setPreviewNotes (preview);
+            timeline.repaint();
+            if (pianoRollVisible)
+                pianoRoll.repaint();
+        }
+    };
+
+    chordInspector.onChordPreviewNoteStartChange = [this] (int measure, int beat, int noteIndexInCell, double newStartBeats)
+    {
+        if (session.updateChordCellNoteStart (session.getSelectedTrack(), measure, beat, noteIndexInCell, newStartBeats))
+        {
+            std::vector<ChordInspectorComponent::PreviewNote> preview;
+            for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+                preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
+            chordInspector.setPreviewNotes (preview);
+            timeline.repaint();
+            if (pianoRollVisible)
+                pianoRoll.repaint();
+        }
+    };
+
+    chordInspector.onChordPreviewNotesQuantize = [this] (int measure, int beat, double gridBeats)
+    {
+        if (session.quantizeChordCellNotes (session.getSelectedTrack(), measure, beat, gridBeats))
+        {
+            std::vector<ChordInspectorComponent::PreviewNote> preview;
+            for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+                preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
+            chordInspector.setPreviewNotes (preview);
+            timeline.repaint();
+            if (pianoRollVisible)
+                pianoRoll.repaint();
+        }
+    };
+
+    chordInspector.onChordPreviewNoteVelocityChange = [this] (int measure, int beat, int noteIndexInCell, int newVelocity)
+    {
+        if (session.updateChordCellNoteVelocity (session.getSelectedTrack(), measure, beat, noteIndexInCell, newVelocity))
+        {
+            std::vector<ChordInspectorComponent::PreviewNote> preview;
+            for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+                preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
+            chordInspector.setPreviewNotes (preview);
+            timeline.repaint();
+            if (pianoRollVisible)
+                pianoRoll.repaint();
+        }
+    };
+
+    chordInspector.onPreviewNotePlay = [this] (int pitch)
+    {
+        session.playPreviewNote (session.getSelectedTrack(), pitch, 65);
     };
 
     timeline.onTrackSelected = [this] (int index)
@@ -634,10 +739,12 @@ void ReasonMainComponent::resized()
     if (pianoRollVisible)
     {
         const int resizerHeight = 6;
+        const int totalContentHeight = r.getHeight();
         auto pianoArea = r.removeFromBottom (pianoRollHeight);
         auto resizerArea = r.removeFromBottom (resizerHeight);
         timeline.setBounds (r);
         pianoRollResizer->setBounds (resizerArea);
+        pianoRoll.setShowNoteLabels (totalContentHeight > 0 && pianoRollHeight >= totalContentHeight * 0.6);
         pianoRoll.setBounds (pianoArea);
     }
     else
@@ -1580,6 +1687,19 @@ void ReasonMainComponent::refreshFxInspector()
         fxInspector.clearEditor();
 }
 
+void ReasonMainComponent::refreshChordPreviewIfSelected()
+{
+    const int measure = chordInspector.getSelectedMeasure();
+    const int beat = chordInspector.getSelectedBeat();
+    if (measure > 0 && beat > 0)
+    {
+        std::vector<ChordInspectorComponent::PreviewNote> preview;
+        for (const auto& note : session.getChordCellPreviewNotesForTrack (session.getSelectedTrack(), measure, beat))
+            preview.push_back ({ note.pitch, note.startBeats, note.lengthBeats, note.velocity });
+        chordInspector.setPreviewNotes (preview);
+    }
+}
+
 void ReasonMainComponent::refreshChordInspector()
 {
     const int trackIndex = session.getSelectedTrack();
@@ -1612,6 +1732,7 @@ void ReasonMainComponent::refreshChordInspector()
 
     chordInspector.setChords (trackName, symbols, starts, measures, beats, beatsPerBar, staff);
     chordInspector.setCurrentTimeSeconds (session.getCurrentTimeSeconds());
+    chordInspector.setKeySignature (session.getKeySignature());
 }
 
 void ReasonMainComponent::refreshSessionState()
@@ -1629,6 +1750,7 @@ void ReasonMainComponent::refreshSessionState()
     timeline.repaint();
     updateTimeDisplay();
     refreshFxInspector();
+    refreshChordPreviewIfSelected();
     refreshChordInspector();
     updateVerticalScrollBar();
 

@@ -70,6 +70,8 @@ set_target_properties(${TARGET_NAME} PROPERTIES
 set(SourceFiles
     ${TARGET_NAME}.h
     ${TARGET_NAME}.cpp
+    ResizeCursors.h
+    ResizeCursors.cpp
     ChordInspectorComponent.h
     ChordInspectorComponent.cpp
     TrackColors.h

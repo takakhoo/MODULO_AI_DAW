@@ -2640,3 +2640,110 @@ python -m realchords.realjam.server --port 8080
 ### Notes for next iteration
 - Optional enhancement: add animated ghost row while dragging for stronger perceived direct manipulation.
 - Optional enhancement: auto-scroll track list while dragging near top/bottom edges on long projects.
+
+## 2026-01-29
+
+### Goals for this milestone
+- Add control-click to add MIDI notes in chord workshop preview window (matching piano roll behavior).
+- Add note resize capability in chord workshop preview (drag right edge to shorten/lengthen notes).
+- Add delete key support in chord workshop to delete selected notes.
+- Add quantize support (Q key) in chord workshop for arpeggios and voicings.
+- Implement bidirectional live sync between piano roll and chord workshop (edits in either space reflect in the other in real time).
+- Ensure chord workshop buttons work robustly with more than 5 notes (no hardcoded limits).
+- Fix F major chord display to use flat spellings (B flat instead of B natural/sharp).
+- Fix key signature display in transport bar to correctly show selected major keys (was stuck on "Cmaj").
+
+### Design choices and reasoning
+- **Chord cell note operations**: Added dedicated SessionController methods (`addChordCellNote`, `deleteChordCellNote`, `resizeChordCellNote`, `quantizeChordCellNotes`) that operate on notes within a specific measure/beat cell, maintaining the cell boundary constraints.
+- **Preview interaction model**: Chord workshop preview now mirrors piano roll interaction patterns:
+  - Control/Command-click adds notes at quantized positions
+  - Click and drag moves notes vertically (pitch change)
+  - Click near right edge and drag resizes note length
+  - Multi-select with Command/Shift-click
+  - Delete/Backspace deletes selected notes
+  - Q key quantizes all notes in the cell
+- **Bidirectional sync**: Both piano roll and chord workshop edit the same underlying MIDI clip (the chord clip). When notes change in either view, `refreshChordPreviewIfSelected()` updates the preview, and piano roll repaints to show changes. This ensures both views always reflect the current state.
+- **Key signature caching**: Implemented `cachedKeySignature` in SessionController to store user-selected key signatures, ensuring the transport bar displays the correct key even when the engine's pitch sequence doesn't immediately reflect the change for major keys.
+- **Flat key detection**: Added `keySignatureUsesFlats()` helper function that explicitly lists all flat keys (F, Bb, Eb, Ab, Db, Gb, Cb and their minor variants) to ensure correct note spelling in chord workshop and transport bar.
+
+### Files changed (and why)
+
+1. **SessionController.h / SessionController.cpp**
+   - Added `cachedKeySignature` member variable to store user-selected key signature.
+   - Added `keySignatureUsesFlats()` static helper to determine if a key signature should use flat spellings.
+   - Modified `getKeySignature()` to return cached value if set, otherwise read from edit's pitch sequence at time 0.0.
+   - Modified `setKeySignature()` to cache the selected key signature.
+   - Added `addChordCellNote()`: Adds a note to a specific chord cell with pitch, start beats, and length beats.
+   - Added `deleteChordCellNote()`: Deletes a note from a chord cell by index.
+   - Added `resizeChordCellNote()`: Resizes a note's length within a chord cell.
+   - Added `quantizeChordCellNotes()`: Quantizes all notes in a chord cell to a grid.
+   - Updated `getNoteNameForPitch()` to use `keySignatureUsesFlats()` for correct note spelling.
+   - Updated `createNewEdit()` and `openEdit()` to clear key signature cache on new/loaded projects.
+
+2. **ChordInspectorComponent.h / ChordInspectorComponent.cpp**
+   - Added keyboard focus support (`setWantsKeyboardFocus(true)`).
+   - Added `getSelectedMeasure()` and `getSelectedBeat()` getters for external access.
+   - Added new callback functions:
+     - `onChordPreviewNoteAdd`: Called when a note is added via control-click.
+     - `onChordPreviewNoteDelete`: Called when delete key is pressed.
+     - `onChordPreviewNoteResize`: Called when a note is resized.
+     - `onChordPreviewNotesQuantize`: Called when Q key is pressed.
+   - Added `PreviewDragMode` enum (none, move, resize) to track drag state.
+   - Added `selectedPreviewNotes` array for multi-select support.
+   - Added helper methods:
+     - `getTimeFromPreviewX()`: Converts X coordinate to beat time within preview.
+     - `getGridBeats()`: Returns quantization grid (16th note = 0.25 beats).
+   - Rewrote `mouseDown()` to handle:
+     - Control/Command-click to add notes
+     - Click on note to select/move
+     - Click near right edge to resize
+     - Multi-select with Command/Shift-click
+   - Rewrote `mouseDrag()` to handle pitch changes (move) and length changes (resize).
+   - Rewrote `mouseUp()` to finalize resize operations with quantization.
+   - Added `keyPressed()` to handle Delete/Backspace and Q key.
+   - Updated `drawPreview()` to show selected notes with highlight and resize handles.
+   - Updated `setKeySignature()` to use `chordKeyUsesFlats()` helper for root button labels.
+   - Updated `getNoteNameWithOctave()` to use `chordKeyUsesFlats()` for correct note spelling.
+
+3. **ReasonMainComponent.cpp / ReasonMainComponent.h**
+   - Added `refreshChordPreviewIfSelected()` helper method to refresh chord preview when piano roll changes.
+   - Wired up new chord workshop callbacks:
+     - `onChordPreviewNoteAdd`: Calls `session.addChordCellNote()` and refreshes both views.
+     - `onChordPreviewNoteDelete`: Calls `session.deleteChordCellNote()` and refreshes both views.
+     - `onChordPreviewNoteResize`: Calls `session.resizeChordCellNote()` and refreshes both views.
+     - `onChordPreviewNotesQuantize`: Calls `session.quantizeChordCellNotes()` and refreshes both views.
+   - Updated existing `onChordPreviewNotePitchChange` to also refresh piano roll.
+   - Added call to `refreshChordPreviewIfSelected()` in `refreshSessionState()` to sync piano roll changes to chord workshop.
+   - Updated `refreshChordInspector()` to set key signature from session.
+
+### Commands run
+- Build and test: `cmake --build build --target Reason`
+- Visual verification of chord workshop preview interactions
+- Tested bidirectional sync by editing notes in both piano roll and chord workshop
+
+### What works now
+- Control/Command-click in chord workshop preview adds notes at quantized positions.
+- Click and drag notes vertically to change pitch (with live preview sound).
+- Click near right edge and drag to resize note length (with quantization on release).
+- Multi-select notes with Command/Shift-click.
+- Delete/Backspace key deletes selected notes in chord workshop.
+- Q key quantizes all notes in the selected chord cell.
+- Piano roll and chord workshop stay in sync: edits in either view immediately reflect in the other.
+- Chord workshop buttons (Block, Arpeggio, inversions, etc.) work correctly with any number of notes (no 5-note limit).
+- F major and other flat keys correctly display flat spellings (Bb instead of A#) in chord workshop and transport bar.
+- Transport bar correctly displays selected major keys (no longer stuck on "Cmaj").
+- Key signature changes persist correctly across UI refreshes.
+
+### Implemented (velocity, resize, chord workshop UX)
+- **Velocity slider:** A vertical velocity slider appears on the left when one or more MIDI notes are selected, in both **Piano Roll** and **Chord Workshop** preview. Single note: slider shows that note’s velocity. Multiple notes: slider shows the **average** velocity; dragging changes all selected notes by the **same delta** (parallel adjustment). Slider appears whenever a note is selected in either view.
+- **Track strip MIDI clip resize:** The same left/right **bracket cursor** and shorten/lengthen behaviour used for note editing is used for **MIDI clips** in the track strip. Resizing a MIDI clip from the left or right edge uses bracket cursors. Shortening a MIDI clip so that notes fall outside the new range **removes those notes**; **Command+Z** undoes that action (engine undo).
+- **Piano roll – left-edge resize:** Dragging the **left edge** of a MIDI note (left bracket handle) now resizes the note from the left (moves start, keeps end fixed), same behaviour as the right edge. Multi-select: all selected notes’ left edges move by the same time delta.
+- **Bracket cursors:** Bracket resize cursors (left/right) are drawn **smaller and thinner** everywhere they appear (MIDI notes in piano roll, chord workshop preview, MIDI clips on the track strip) so the user can interact with better precision.
+- **Snap to grid when close:** When extending or shortening a MIDI note (piano roll or chord workshop), the note **snaps to a quantizable length** (e.g. eighth, quarter, sixteenth) only if the user gets **very close** to that length (threshold ~15% of grid or 20 ms). Otherwise the exact dragged length is kept. Same idea for chord workshop note start when dragging the left edge.
+- **Chord workshop preview – note labels:** MIDI blocks in the chord workshop preview are **always** labeled with the note name (e.g. C4, G#3) in the original simple style (no background box). **Piano roll note labels** show when `showNoteLabels` is on and note row height ≥ 8 px; font size scales between 6 pt and 10 pt so labels remain visible at typical zoom levels.
+- **Chord workshop preview – grid lines:** Vertical grid lines are drawn at the current grid (e.g. 16th-note) to aid quantization.
+- **Chord workshop preview – velocity:** Velocity is no longer fixed at 100; it is shown and editable via the velocity slider when preview notes are selected, and new notes can be added with a chosen velocity.
+- **Chord workshop preview – note start time:** Note start time can be edited by dragging the **left edge** of a note (left bracket handle). Start snaps to grid on release only when close; note end stays fixed so length changes. Right edge still resizes length.
+
+### Limitations / next steps
+- None specific to the above; general roadmap items (multi-note resize in piano roll, etc.) remain as elsewhere in this doc.

@@ -157,6 +157,18 @@ void TrackListComponent::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
     g.drawText ("Tracks", header.reduced (10, 4), juce::Justification::centredLeft);
 
+    if (dragReorderActive && dragReorderSourceIndex >= 0 && dragStripY >= 0
+        && juce::isPositiveAndBelow (dragReorderSourceIndex, strips.size()))
+    {
+        auto* strip = strips[dragReorderSourceIndex];
+        const int ghostY = juce::jlimit (headerHeight, juce::jmax (headerHeight, getHeight() - rowHeight),
+                                         dragStripY - rowHeight / 2);
+        auto snapshot = strip->createComponentSnapshot (strip->getLocalBounds());
+        g.setOpacity (0.92f);
+        g.drawImageAt (snapshot, 0, ghostY);
+        g.setOpacity (1.0f);
+    }
+
     if (dragReorderActive && dragReorderTargetIndex >= 0)
     {
         const int y = headerHeight + dragReorderTargetIndex * rowHeight - scrollOffset;
@@ -273,7 +285,10 @@ void TrackListComponent::rebuildStrips()
                 dragReorderActive = true;
                 dragReorderSourceIndex = sourceIndex;
                 dragReorderTargetIndex = sourceIndex;
+                dragStripY = pointerY;
             }
+
+            dragStripY = pointerY;
 
             int target = getTrackIndexAtY (pointerY);
             if (target < 0)
@@ -293,6 +308,7 @@ void TrackListComponent::rebuildStrips()
                 dragReorderActive = false;
                 dragReorderSourceIndex = -1;
                 dragReorderTargetIndex = -1;
+                dragStripY = -1;
                 repaint();
 
                 if (src >= 0 && dst >= 0 && src != dst && onTrackReordered != nullptr)

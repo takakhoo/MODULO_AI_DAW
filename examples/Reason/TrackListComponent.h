@@ -63,5 +63,6 @@ private:
     int visibleHeightOverride = -1;
     int dragReorderSourceIndex = -1;
     int dragReorderTargetIndex = -1;
+    int dragStripY = -1;
     bool dragReorderActive = false;
 };

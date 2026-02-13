@@ -66,6 +66,7 @@ private:
     void setPianoRollHeight (int newHeight);
     void refreshFxInspector();
     void refreshChordInspector();
+    void refreshChordPreviewIfSelected();
     void refreshSessionState();
     void updateVerticalScrollBar();
     void handleTrackScroll (int newOffset);

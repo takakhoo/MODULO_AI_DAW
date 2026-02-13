@@ -1,4 +1,5 @@
 #include "TimelineComponent.h"
+#include "ResizeCursors.h"
 #include "TrackColors.h"
 #include <cmath>
 #include <unordered_set>
@@ -998,11 +999,19 @@ void TimelineComponent::updateMouseCursorForPosition (juce::Point<int> position)
     auto clipRects = buildClipRects();
     if (const auto* clipRect = findClipRectAt (position, clipRects))
     {
-        if (clipRect->info.type == SessionController::ClipType::midi
-            && getClipResizeEdgeAt (*clipRect, position) != ResizeEdge::none)
+        if (clipRect->info.type == SessionController::ClipType::midi)
         {
-            setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
-            return;
+            const auto edge = getClipResizeEdgeAt (*clipRect, position);
+            if (edge == ResizeEdge::left)
+            {
+                setMouseCursor (ReasonResizeCursors::getLeftBracketResizeCursor());
+                return;
+            }
+            if (edge == ResizeEdge::right)
+            {
+                setMouseCursor (ReasonResizeCursors::getRightBracketResizeCursor());
+                return;
+            }
         }
     }
 

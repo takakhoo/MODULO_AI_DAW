@@ -16,6 +16,7 @@ public:
 
     void setView (double newViewStartSeconds, double newPixelsPerSecond);
     void setRulerVisible (bool shouldShow) { showRuler = shouldShow; }
+    void setShowNoteLabels (bool show) { showNoteLabels = show; repaint(); }
 
     std::function<void (double viewStartSeconds, double pixelsPerSecond)> onViewChanged;
 
@@ -24,6 +25,7 @@ public:
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDrag (const juce::MouseEvent& event) override;
     void mouseUp (const juce::MouseEvent& event) override;
+    void mouseMove (const juce::MouseEvent& event) override;
     void mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& details) override;
     void mouseMagnify (const juce::MouseEvent& event, float scaleFactor) override;
     bool keyPressed (const juce::KeyPress& key) override;
@@ -40,7 +42,8 @@ private:
     {
         none,
         move,
-        resize
+        resize,
+        resizeLeft
     };
 
     std::vector<NoteRect> buildNoteRects() const;
@@ -53,10 +56,12 @@ private:
 
     double getGridSeconds() const;
     double quantizeSeconds (double seconds) const;
+    double snapLengthToGridIfClose (double lengthSeconds) const;
     int getNoteFromY (int y, juce::Rectangle<int> area) const;
     float getNoteHeight (juce::Rectangle<int> area) const;
     bool isBlackKey (int noteNumber) const;
     bool isNoteSelected (const juce::ValueTree& state) const;
+    int getNoteGridLeft() const;
     juce::Rectangle<int> getNoteGridArea() const;
 
     SessionController* session = nullptr;
@@ -68,9 +73,11 @@ private:
     const double maxPixelsPerSecond = 800.0;
 
     int keyboardWidth = 64;
+    int velocityStripWidth = 24;
     int rulerHeight = 24;
     int sustainLaneHeight = 44;
     bool showRuler = true;
+    bool showNoteLabels = false;
     int lowestNote = 36;
     int highestNote = 84;
 
@@ -93,6 +100,8 @@ private:
     int dragAllDeltaSemitones = 0;
     bool dragAllResizing = false;
     double dragAllResizeDelta = 0.0;
+    bool dragAllResizeLeft = false;
+    double dragAllResizeLeftDeltaStart = 0.0;
     std::vector<SessionController::MidiNoteInfo> dragAllBaseNotes;
     bool isLassoSelecting = false;
     bool lassoAdditive = false;
@@ -101,6 +110,13 @@ private:
 
     std::vector<SessionController::MidiNoteInfo> clipboardNotes;
     double clipboardStartSeconds = 0.0;
+
+    int lastPlayedPitchDuringDrag = -1;
+
+    juce::Slider velocitySlider;
+    double velocitySliderLastValue = 64.0;
+    void updateVelocitySliderFromSelection();
+    void applyVelocitySliderChange();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PianoRollComponent)
 };
