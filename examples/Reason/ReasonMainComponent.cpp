@@ -1747,6 +1747,7 @@ void ReasonMainComponent::refreshSessionState()
     trackList.setSelectedIndex (session.getSelectedTrack());
     transportBar.setMidiInputText ("MIDI: " + session.getSelectedMidiInputName());
     transportBar.setRecordActive (session.isRecording());
+    session.refreshMidiLiveRouting();
     timeline.repaint();
     updateTimeDisplay();
     refreshFxInspector();

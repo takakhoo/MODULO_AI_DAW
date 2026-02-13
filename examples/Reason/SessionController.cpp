@@ -3679,7 +3679,15 @@ void SessionController::ensureTrackStateSize()
         return;
     }
 
+    const bool hadAnyArmed = std::any_of (trackArmed.begin(), trackArmed.end(), [] (bool b) { return b; });
     trackArmed.resize ((size_t) count, false);
+
+    // Keep at least the selected track (or track 0) armed so record and monitoring always work.
+    if (! hadAnyArmed || std::none_of (trackArmed.begin(), trackArmed.end(), [] (bool b) { return b; }))
+    {
+        const int idx = (selectedTrackIndex >= 0 && selectedTrackIndex < count) ? selectedTrackIndex : 0;
+        trackArmed[(size_t) idx] = true;
+    }
 }
 
 int SessionController::getInsertIndexBeforeVolume (te::AudioTrack& track) const
@@ -3739,11 +3747,14 @@ bool SessionController::insertDefaultInstrumentIfAvailable (int trackIndex)
 
 void SessionController::configureMidiInputRoutingForLivePlay()
 {
-    if (edit == nullptr)
+    if (edit == nullptr || transport == nullptr)
         return;
 
     ensureTrackStateSize();
     ensureMidiInputSelection();
+
+    // Allocate playback context so MIDI input instances exist (required for routing and monitoring).
+    transport->ensureContextAllocated (true);
 
     auto devices = engine.getDeviceManager().getMidiInDevices();
     if (devices.empty())
@@ -3870,20 +3881,30 @@ void SessionController::configureMidiInputRoutingForLivePlay()
 
 bool SessionController::prepareMidiRecording()
 {
-    if (edit == nullptr)
+    if (edit == nullptr || transport == nullptr)
         return false;
 
+    transport->ensureContextAllocated (true);
     ensureTrackStateSize();
     ensureMidiInputSelection();
+
     bool anyArmed = false;
     for (auto armed : trackArmed)
         anyArmed |= armed;
 
     if (! anyArmed)
     {
-        logRecordDebug ("prepareMidiRecording: failed - no armed tracks");
-        engine.getUIBehaviour().showWarningMessage ("No tracks are armed for MIDI recording.");
-        return false;
+        auto tracks = te::getAudioTracks (*edit);
+        if (tracks.isEmpty())
+        {
+            logRecordDebug ("prepareMidiRecording: failed - no tracks");
+            engine.getUIBehaviour().showWarningMessage ("No tracks to record to.");
+            return false;
+        }
+        const int idx = (selectedTrackIndex >= 0 && selectedTrackIndex < tracks.size()) ? selectedTrackIndex : 0;
+        trackArmed[(size_t) idx] = true;
+        anyArmed = true;
+        logRecordDebug ("prepareMidiRecording: auto-armed track " + juce::String (idx) + " for recording");
     }
 
     auto devices = engine.getDeviceManager().getMidiInDevices();

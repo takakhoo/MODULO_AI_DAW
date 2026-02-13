@@ -2745,5 +2745,10 @@ python -m realchords.realjam.server --port 8080
 - **Chord workshop preview – velocity:** Velocity is no longer fixed at 100; it is shown and editable via the velocity slider when preview notes are selected, and new notes can be added with a chosen velocity.
 - **Chord workshop preview – note start time:** Note start time can be edited by dragging the **left edge** of a note (left bracket handle). Start snaps to grid on release only when close; note end stays fixed so length changes. Right edge still resizes length.
 
+### MIDI record and monitoring (always-on)
+- **Record always available:** At least one track is kept armed (selected track or track 0). If none were armed when you press Record, the selected track is auto-armed so recording is never blocked by “no tracks armed.” `ensureTrackStateSize()` now re-arms the selected track (or track 0) whenever the armed state would otherwise be all false (e.g. after undo/redo or track list resize).
+- **Playback context for MIDI:** Before routing the selected MIDI input to tracks, the edit’s playback context is allocated (`transport->ensureContextAllocated (true)`). That ensures MIDI input device instances exist so the selected device (e.g. Casio) can be found and routed. Without this, opening the app with a MIDI keyboard plugged in could show the device in “MIDI In” but record and live monitoring would fail.
+- **Live monitoring:** The selected MIDI input is routed to the selected track (and any explicitly armed tracks). The selected track gets a default instrument if it has none, so you hear keys immediately on a non-muted track. `refreshSessionState()` now calls `refreshMidiLiveRouting()` so routing is re-applied on every session refresh (load, track change, etc.).
+
 ### Limitations / next steps
 - None specific to the above; general roadmap items (multi-note resize in piano roll, etc.) remain as elsewhere in this doc.
